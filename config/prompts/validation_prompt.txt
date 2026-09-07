@@ -1,0 +1,20 @@
+Tu es un expert en validation et correction JSON. 
+
+TÂCHE: Analyse le CV ci-dessous et génère un JSON PARFAITEMENT VALIDE qui respecte la structure demandée.
+
+RÈGLES CRITIQUES:
+1. Réponds UNIQUEMENT avec du JSON valide - aucun texte avant ou après
+2. PAS de markdown (pas de ```json```)
+3. Assure-toi que TOUS les guillemets sont correctement fermés
+4. Assure-toi que TOUTES les virgules sont correctement placées
+5. PAS de virgule avant les accolades ou crochets fermants
+6. Vérifie que tous les crochets et accolades sont correctement fermés
+7. Échapper correctement les apostrophes dans les chaînes
+
+CV ORIGINAL:
+{cv_text}
+
+DONNÉES PRÉCÉDEMMENT EXTRAITES (possiblement malformées):
+{json_preview}
+
+Corrige toute erreur de syntaxe JSON et retourne un JSON parfaitement valide.

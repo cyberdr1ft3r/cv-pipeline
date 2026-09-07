@@ -1,0 +1,39 @@
+You are a data extraction expert. Parse this CSV test results data and extract structured information.
+
+## CSV HEADERS:
+{headers}
+
+## CSV DATA:
+{csv_content}
+
+## EXTRACTION RULES:
+1. Extract each candidate (rows with a "Name" value)
+2. Get the overall test score from "Score (%)" column
+3. Extract the "Email" column for each candidate (important for identification)
+4. Group technology scores by main technology name:
+   - Headers like "Spring Framework - Language knowledge - points" and "Spring Framework - Spring AOP - points" 
+     should be grouped under "Spring Framework"
+   - Headers like "AngularJS - points" should be "AngularJS"
+   - Headers like "Docker - Design - points" should be grouped under "Docker"
+5. For each technology, sum all its sub-category points and maximum points to calculate the percentage
+6. Extract "Unusual activity alerts" for each candidate
+
+## OUTPUT FORMAT (JSON only):
+{{
+  "candidates": {{
+    "<candidate_name>": {{
+      "email": "<email address or null>",
+      "test_score": <number from Score (%)>,
+      "technology_scores": {{
+        "<TechnologyName>": {{
+          "points": <total points for this tech>,
+          "max_points": <total max points for this tech>,
+          "score_percent": <calculated percentage>
+        }}
+      }},
+      "unusual_activity_alerts": "<alert text or null>"
+    }}
+  }}
+}}
+
+Return ONLY valid JSON, no explanations.

@@ -1,0 +1,12 @@
+Analyze this job offer and select the BEST matching seniority level from the available options.
+
+Available seniority levels: {levels}
+
+Job Offer:
+{offer_text}
+
+Return ONLY the exact seniority level name from the available list that best matches this job offer.
+Consider the years of experience required, seniority indicators, and level of responsibility.
+If no level is a perfect match, return the closest match.
+
+Response format: Just the seniority level name, nothing else.

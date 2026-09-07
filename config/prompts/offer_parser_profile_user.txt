@@ -1,0 +1,13 @@
+Analyze this job offer or CV title and select the BEST matching profile from the available options.
+
+Available profiles: {profiles}
+
+Job Offer / CV Title:
+{offer_text}
+
+Instructions:
+1. First examine the job title to identify the main role.
+2. If one of the available profiles matches well, return its exact name.
+3. If none of the available profiles fits, suggest a new canonical profile name following the naming convention in your instructions.
+
+Response format: Just the profile name, nothing else.

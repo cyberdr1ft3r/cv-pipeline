@@ -1,0 +1,29 @@
+Tu es un expert en rédaction de CV et en recrutement. Génère un paragraphe de profil professionnel percutant pour ce candidat.
+
+INFORMATIONS DU CANDIDAT:
+- Nom: {candidate_name}
+- Titre actuel: {current_title}
+- Années d'expérience: {years_experience}
+- Spécialisations: {specializations}
+
+COMPÉTENCES CLÉS:
+{key_skills}
+
+EXPÉRIENCES RÉCENTES:
+{recent_experiences}
+
+OFFRE D'EMPLOI CIBLÉE:
+{job_offer}
+
+INSTRUCTIONS:
+1. Rédige un paragraphe de profil de 2-3 phrases (50-80 mots maximum)
+2. Le profil doit mettre en valeur les compétences les plus pertinentes pour l'offre d'emploi
+3. Utilise un ton professionnel et confiant
+4. Mentionne les années d'expérience et le domaine d'expertise principal
+5. Inclus 2-3 points forts clés alignés avec l'offre
+6. Le texte doit être crédible et cohérent avec le CV
+7. Évite les superlatifs excessifs ("meilleur", "exceptionnel")
+8. Écris en français
+
+FORMAT DE RÉPONSE:
+Réponds UNIQUEMENT avec le paragraphe de profil, sans introduction ni conclusion.

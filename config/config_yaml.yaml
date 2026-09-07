@@ -1,0 +1,225 @@
+﻿# ================================
+# CV EXTRACTION PIPELINE CONFIG
+# ================================
+
+# API Configuration
+api:
+  # DEPRECATED: provider: "openrouter"
+  base_url: "https://openrouter.ai/api/v1"
+  model: "xiaomi/mimo-v2.5"
+
+  # Fallback models (tried in order if primary fails)
+  fallback_models:
+    - "deepseek/deepseek-v4-flash"
+    - "minimax/minimax-m3"
+
+  # Retry configuration
+  max_retries: 5
+  retry_wait_seconds: 5
+  timeout_seconds: 120
+
+  # Rate limiting - optimized for free tier
+  max_requests_per_minute: 5
+  # DEPRECATED: enable_rate_limiting: true
+
+  # LLM parameters
+  temperature: 0.0
+  max_tokens: 8192
+
+  # Staging CV upload limit (single file via /cv-upload page)
+  staging_upload_max_mb: 10
+  # Pipeline batch CV upload limit
+  pipeline_upload_max_mb: 50
+  # API rate-limit defaults (override via env: RATE_LIMIT_PER_MINUTE/HOUR/DAY)
+  rate_limit_per_minute: 60
+  rate_limit_per_hour: 1000
+  rate_limit_per_day: 10000
+  # CORS default (override via env: CORS_ORIGINS)
+  cors_origins_default: "http://localhost:3000,http://localhost:3001"
+  # JSON repair retries in final_result.py
+  json_repair_retries: 3
+  # Per-call LLM parameter overrides
+  vision:
+    temperature: 0.0
+    max_tokens: 4096
+  optimizer:
+    temperature: 0.1
+    max_tokens: 3000
+  job_title:
+    temperature: 0.0
+    max_tokens: 100
+  profile_gen:
+    temperature: 0.3
+    max_tokens: 200
+
+# Directory paths
+# Action 227: pipeline data is no longer stored under the local ./data folder.
+# The data workspace root is resolved at runtime from the DATA_ROOT env var by
+# script/storage_paths.py (DATA_ROOT defaults to <project>/data for local dev,
+# and points to the mounted storage folder /sftp/cv_tech/files/Data in production).
+# Layout: DATA_ROOT/current/{folder}/{session_id} and DATA_ROOT/archive/{session_id}.
+# The folder keys below are LEGACY/local-fallback only and are NOT used to build
+# data paths anymore â€” code uses storage_paths.CURRENT_DIR / ARCHIVE_DIR instead.
+# Only `templates`, `POPPLER_PATH` and `tesseract_cmd` are still read from here.
+paths:
+  # DEPRECATED (legacy local-fallback names; runtime uses DATA_ROOT/current/...)
+  intermediary: "data/intermediary_structured"
+  archive: "data/archive"
+  logs: "data/logs"
+  failed: "data/failed"
+  POPPLER_PATH: "C:/Program Files/poppler/Library/bin"
+  # empty string = use system PATH; Windows: C:/Program Files/Tesseract-OCR/tesseract.exe
+  tesseract_cmd: ""
+  offer: "data/offer"
+  tests: "data/tests"
+  final_result: "data/final_result"
+  formatted_cv: "data/formatted_cv"
+  templates: "templates"
+  temp_cvs: "data/temp_cvs"
+
+
+# Prompt files (relative to config directory)
+prompts:
+  extraction: "prompts/extraction_prompt.txt"
+  validation: "prompts/validation_prompt.txt"
+  spelling: "prompts/spelling_prompt.txt"
+  final_result: "prompts/final_result_prompt.txt"
+  # Agentic extraction prompts
+  agentic_text: "prompts/agentic_extract_text.txt"
+  agentic_image: "prompts/agentic_extract_image.txt"
+  agentic_excel: "prompts/agentic_extract_excel.txt"
+  # Offer parser prompts
+  offer_parser_profile_system: "prompts/offer_parser_profile_system.txt"
+  offer_parser_profile_user: "prompts/offer_parser_profile_user.txt"
+  offer_parser_seniority_system: "prompts/offer_parser_seniority_system.txt"
+  offer_parser_seniority_user: "prompts/offer_parser_seniority_user.txt"
+  offer_parser_metadata_skills_rules: "prompts/offer_parser_metadata_skills_rules.txt"
+
+# Processing settings
+processing:
+  duplicate_threshold: 0.85
+  # DEPRECATED: max_pdf_size_mb: 100
+  # DEPRECATED: parallel_processing: false
+  # DEPRECATED: max_workers: 3
+
+  # Extraction optimization
+  # DEPRECATED: use_single_pass_extraction: true
+  # DEPRECATED: enable_json_mode: true
+  # DEPRECATED: enable_schema_validation: true
+  # DEPRECATED: skip_validation: true
+  # DEPRECATED: skip_spelling_correction: true
+
+# Extraction settings
+extraction:
+  # Extraction mode: 'agentic' (LLM-based) or 'library' (traditional)
+  mode: "agentic"
+  # Max characters sent to LLM in prompt truncation
+  max_prompt_chars: 3000
+  # DPI for PDF-to-image conversion during OCR
+  ocr_dpi: 300
+
+  # Agentic extraction settings
+  agentic:
+    # Whether to use LLM for text cleaning (even for plain text files)
+    clean_text_with_llm: true
+    # Minimum text length to skip LLM cleaning
+    skip_llm_for_short_text: 100
+
+  # Fallback behavior
+  fallback:
+    # Always fall back to library if LLM fails
+    enabled: true
+    # Log fallback events
+    log_fallbacks: true
+
+# Matching settings
+matching:
+  score_threshold: 50.0
+  cv_retry_attempts: 3
+
+# Pipeline shared constants (used by both watcher and API)
+pipeline:
+  supported_extensions: [".pdf", ".docx", ".doc"]
+  seniority_levels: ["Junior", "Confirme", "Senior", "Expert"]
+  # Max wall-clock time a single pipeline subprocess may run before it is killed
+  # and the job marked failed (service/runner.py). Default 1800 = 30 min.
+  max_subprocess_timeout_seconds: 1800
+  # Max total duration a job may stay in "running" before the stale-job sweeper
+  # marks it failed (service/api.py startup thread). Default 60 min.
+  max_job_duration_minutes: 60
+  # Interval between stale-job sweeper passes. Default 5 min.
+  stale_job_check_interval_minutes: 5
+
+# Logging configuration
+logging:
+  level: "INFO"
+  console_level: "INFO"
+  file_level: "DEBUG"
+
+# CV Formatting Optimization
+project_optimization:
+  enabled: true
+  max_projects: 6
+
+experience_optimization:
+  enabled: true
+  max_missions_per_experience: 5
+  # DEPRECATED: format: "%(asctime)s | %(levelname)-8s | %(message)s"
+  # DEPRECATED: date_format: "%Y-%m-%d %H:%M:%S"
+
+# Output configuration
+# DEPRECATED: output:
+#   pretty_print: true
+#   indent: 2
+#   include_metadata: true
+#   backup_on_overwrite: true
+
+# Language settings
+# DEPRECATED: language:
+#   default: "fr"
+#   supported: ["fr", "en"]
+
+# CV Generation settings
+cv_generation:
+  # PDF generation settings
+  pdf:
+    # DEPRECATED: enabled: true
+    # DEPRECATED: format: "A4"
+    # DEPRECATED: background: true
+    timeout_ms: 60000
+
+
+# ================================
+# STAGING WATCHER (script/staging_watcher.py)
+# ================================
+# watcher settings are env-var driven:
+# CV_STORAGE_ROOT (default: /sftp/cv_tech/files)
+# CV_LIBRARY_ROOT (default: /sftp/cv_tech/files/CV_Theque)
+# WATCHER_STAGING_PATH (default: /sftp/cv_tech/files/staging)
+# WATCHER_POLL_INTERVAL_SECONDS (default: 30)
+# WATCHER_MAX_WORKERS (default: 4)
+# See config/.env_example for defaults.
+watcher:
+  reserved_dir_names: ["processed", "failed"]
+  internship_contract_types: ["stage", "pfe", "alternance", "apprentissage", "contrat anapec"]
+
+# ================================
+# CONFIGURATION NOTES
+# ================================
+#
+# SINGLE-PASS EXTRACTION:
+# - use_single_pass_extraction: true â†’ 1 API call per CV (RECOMMENDED)
+# - use_single_pass_extraction: false â†’ 3 API calls per CV (legacy mode)
+#
+# RATE LIMITING GUIDE (free tier):
+# - max_requests_per_minute: 5  â†’ ~12s delay, ~10-15 CVs/hour (SAFE)
+# - max_requests_per_minute: 10 â†’ ~6s delay, ~20-25 CVs/hour (RISKY)
+# - max_requests_per_minute: 20 â†’ ~3s delay, ~40 CVs/hour (VERY RISKY)
+#
+# FOR PAID TIER:
+# - Increase max_requests_per_minute
+# - Set parallel_processing: true
+# - Set max_workers: 5-10
+# ================================
+
+

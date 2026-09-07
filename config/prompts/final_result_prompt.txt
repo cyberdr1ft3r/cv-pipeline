@@ -1,0 +1,59 @@
+You are an expert HR analyst tasked with producing a final ranked list of candidates.
+
+You are given:
+1. Pre-matched candidate data with AI matching scores and test scores already combined
+2. The job offer description to evaluate candidate fit
+
+## INPUT DATA
+
+### Job Offer Description:
+{offer_description}
+
+### Pre-Matched Candidate Data:
+The following data has already been matched between CV analysis and test scores.
+Each candidate entry contains their overall_score (from AI CV matching) and test_score (from technical tests).
+
+{matching_data}
+
+## YOUR TASK
+
+1. **Calculate Final Scores**: For each candidate in the data above, calculate:
+   final_score = (overall_score * 0.4) + (test_score * 0.6)
+   
+2. **Rank Candidates**: Sort candidates by final_score in descending order (highest score = rank 1)
+
+3. **Evaluate Offer Fit**: For each candidate, assess their ability to succeed in this specific role based on its score of each Technology and the requirements of the offer
+
+## OUTPUT REQUIREMENTS
+
+Return ONLY a valid JSON object with this exact structure:
+
+```json
+{{
+  "session_id": "{session_id}",
+  "job_title": "{job_title}",
+  "timestamp": "{timestamp}",
+  "total_candidates": <number>,
+  "candidates": [
+    {{
+      "name": "<use the exact name from the input data>",
+      "overall_score": <copy the overall_score from input data>,
+      "test_score": <copy the test_score from input data>,
+      "final_score": <calculated: overall_score * 0.4 + test_score * 0.6>,
+      "rank": <1, 2, 3, etc.>,
+      "technology_scores": <copy from input data>,
+      "unusual_activity_alerts": <copy from input data>,
+      "offer_fit_assessment": "<brief assessment>"
+    }}
+  ]
+}}
+```
+
+## CRITICAL RULES
+
+- **PRESERVE all values from input data exactly** (name, overall_score, test_score, technology_scores, unusual_activity_alerts)
+- Only CALCULATE final_score and rank
+- Round final_score to 2 decimal places
+- The candidates array MUST be sorted by rank (ascending)
+- Return ONLY valid JSON, no text outside the JSON object
+- Keep offer_fit_assessment concise (1-2 sentences max)

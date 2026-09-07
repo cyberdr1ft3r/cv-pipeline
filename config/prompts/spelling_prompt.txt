@@ -1,0 +1,9 @@
+Corrige uniquement l'orthographe, la typographie et les accents dans ce JSON. 
+
+RÈGLES:
+- NE CHANGE PAS la structure ou les clés
+- Ne rajoute ni supprime de champs
+- Assure-toi que le JSON reste valide
+- Retourne uniquement le JSON corrigé, sans texte additionnel
+
+{json_text}

@@ -1,0 +1,107 @@
+# ⚠️ ARCHIVED REFERENCE - Use root docker-compose.yml instead
+# 
+# This file is kept as historical reference for the original standalone n8n setup.
+# All services (n8n, API, Frontend, PostgreSQL, MCP) are now deployed unified 
+# from the root docker-compose.yml
+#
+# To start all services:
+#   cd ..
+#   docker-compose up -d
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Original n8n + PostgreSQL + MCP stack (now integrated in root)
+
+volumes:
+  n8n_data:
+  postgres_data:
+
+networks:
+  n8n_network:
+    driver: bridge
+
+services:
+
+  # ─────────────────────────────────────────
+  # PostgreSQL database
+  # ─────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: n8n_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - n8n_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─────────────────────────────────────────
+  # n8n — workflow engine
+  # ─────────────────────────────────────────
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: n8n
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "5678:5678"
+    environment:
+      # Database
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+
+      # n8n core
+      N8N_HOST: localhost
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: http://localhost:5678/
+
+      # Security
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+
+      # Timezone (Morocco)
+      GENERIC_TIMEZONE: Africa/Casablanca
+      TZ: Africa/Casablanca
+
+      # Enable API (required for mcp/n8n)
+      N8N_PUBLIC_API_DISABLED: "false"
+      # Allow $env access inside node expressions
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - n8n_network
+
+  # ─────────────────────────────────────────
+  # mcp/n8n — MCP bridge for AI tools
+  # ─────────────────────────────────────────
+  n8n_mcp:
+    image: mcp/n8n:latest
+    container_name: n8n_mcp
+    restart: unless-stopped
+    depends_on:
+      - n8n
+    environment:
+      N8N_API_URL: http://n8n:5678
+      N8N_API_KEY: ${N8N_API_KEY}
+    healthcheck:
+      disable: true
+    networks:
+      - n8n_network
+    stdin_open: true
+    tty: true

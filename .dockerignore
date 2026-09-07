@@ -1,0 +1,32 @@
+# Node and build artifacts
+node_modules
+frontend_enterprise/node_modules
+frontend_enterprise/.next
+**/node_modules
+**/.next
+
+# Python environment
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+
+# Git and config
+.git
+.gitignore
+.env
+*.env
+
+# Local data and logs
+data
+logs
+*.log
+
+# Docker
+docker-compose.override.yml
+Dockerfile
+
+# OS files
+.DS_Store
+Thumbs.db

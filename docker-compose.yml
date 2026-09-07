@@ -1,0 +1,248 @@
+volumes:
+  postgres_data:
+  n8n_data:
+  # Action 228: SFTP "Data" share exposed as a named volume via the vieux/sshfs
+  # Docker volume plugin. This works natively with Docker Desktop on Windows
+  # (the WSL2 host-side sshfs + bind-mount approach from Action 227 failed
+  # because Docker Desktop cannot bind-mount \\wsl$\ paths). Requires:
+  #   docker plugin install vieux/sshfs
+  # SFTP_PASSWORD is interpolated from config/.env at `docker compose up`.
+  sftp_data:
+    driver: vieux/sshfs
+    driver_opts:
+      sshcmd: "cv_tech_sftp@82.25.119.163:/sftp/cv_tech/files/Data"
+      port: "22"
+      password: "${SFTP_PASSWORD}"
+      allow_other: ""
+      nonempty: ""
+      reconnect: ""
+      ServerAliveInterval: "10"
+      ServerAliveCountMax: "3"
+  # Action 230: CV bank mount — lets offer_only pipeline read CV JSONs directly
+  # from CV_Theque without copying into intermediary_structured.
+  sftp_cv_theque:
+    driver: vieux/sshfs
+    driver_opts:
+      sshcmd: "cv_tech_sftp@82.25.119.163:/sftp/cv_tech/files/CV_Theque"
+      port: "22"
+      password: "${SFTP_PASSWORD}"
+      allow_other: ""
+      nonempty: ""
+      reconnect: ""
+      ServerAliveInterval: "10"
+      ServerAliveCountMax: "3"
+
+networks:
+  cvs_project_network:
+    driver: bridge
+
+services:
+
+  # ─────────────────────────────────────────
+  # PostgreSQL database (shared by all services)
+  # ─────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: cv_pipeline_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cv_pipeline}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/db_init.sql:/docker-entrypoint-initdb.d/01_init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-cv_pipeline}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cvs_project_network
+    
+  pgadmin:
+    image: dpage/pgadmin4
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5051:80"
+    networks:
+    - cvs_project_network
+
+  # ─────────────────────────────────────────
+  # FastAPI backend (CV processing API)
+  # ─────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: service/Dockerfile
+    container_name: cv_pipeline_api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://${API_DB_USER:-api_user}:${API_DB_PASSWORD:-api_password_change_in_prod}@postgres:5432/${POSTGRES_DB:-cv_pipeline}
+      PYTHONUNBUFFERED: 1
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-300}
+      # Action 255: hardcoded — must match sftp_data volume mount below so api and
+      # watcher always read/write the same path regardless of host .env / compose invocation.
+      DATA_ROOT: /sftp/cv_tech/files/Data
+    volumes:
+      # Action 228/230: SFTP shares via vieux/sshfs named volumes. DATA_ROOT and
+      # SFTP_ROOT_PATH in config/.env point the app at these mount paths.
+      - sftp_data:/sftp/cv_tech/files/Data
+      - sftp_cv_theque:/sftp/cv_tech/files/CV_Theque
+      - ./logs:/app/logs
+      - ./service:/app/service
+      - ./script:/app/script
+      - ./config:/app/config
+    command: uvicorn service.api:app --host 0.0.0.0 --port 8000 --reload
+    healthcheck:
+      test: ["CMD-SHELL", "ls /sftp/cv_tech/files/Data/current >/dev/null 2>&1 && ls /sftp/cv_tech/files/CV_Theque >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 2
+      start_period: 30s
+    networks:
+      - cvs_project_network
+
+  # ─────────────────────────────────────────
+  # Staging Folder Watcher (daemon)
+  # Reuses the API image — same Dockerfile installs all script + service deps.
+  # No port exposed: watcher is a pure background process.
+  # ─────────────────────────────────────────
+  watcher:
+    build:
+      context: .
+      dockerfile: service/Dockerfile
+    container_name: cv_pipeline_watcher
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PYTHONUNBUFFERED: "1"
+      DATABASE_URL: postgresql://${API_DB_USER:-api_user}:${API_DB_PASSWORD:-api_password_change_in_prod}@postgres:5432/${POSTGRES_DB:-cv_pipeline}
+      # WATCHER_* vars have safe defaults — override here to tune without editing config/.env
+      WATCHER_STAGING_PATH: ${WATCHER_STAGING_PATH:-/sftp/cv_tech/files/staging}
+      WATCHER_POLL_INTERVAL_SECONDS: ${WATCHER_POLL_INTERVAL_SECONDS:-30}
+      WATCHER_MAX_WORKERS: ${WATCHER_MAX_WORKERS:-4}
+      # Action 255: hardcoded — same DATA_ROOT as api (see api service comment).
+      DATA_ROOT: /sftp/cv_tech/files/Data
+      # SFTP_HOST, SFTP_USER, SFTP_PASSWORD, SFTP_PORT, SFTP_ROOT_PATH, OPENROUTER_API_KEY
+      # are NOT declared here — declaring them without a value sets them to an empty string
+      # in the container, which prevents service.config from loading the real value out of
+      # the mounted config/.env (os.environ.setdefault refuses to overwrite an existing key).
+      # They are loaded automatically from ./config:/app/config the same way the api service does.
+      # Note: WATCHER_STAGING_PATH and SFTP_ROOT_PATH are *remote* SFTP paths used by
+      # paramiko (sftp_loader / staging_watcher) — they are NOT the local DATA_ROOT mount.
+    volumes:
+      - ./data:/app/data                                            # dev fallback (DATA_ROOT unset / =/app/data)
+      - sftp_data:/sftp/cv_tech/files/Data                          # Action 228: vieux/sshfs named volume (SFTP Data share)
+      - sftp_cv_theque:/sftp/cv_tech/files/CV_Theque                # Action 230: direct CV bank read
+      - ./logs:/app/logs
+      - ./service:/app/service
+      - ./script:/app/script
+      - ./config:/app/config
+    command: python -m script.staging_watcher
+    healthcheck:
+      test: ["CMD-SHELL", "ls /sftp/cv_tech/files/Data/current >/dev/null 2>&1 && ls /sftp/cv_tech/files/CV_Theque >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 2
+      start_period: 30s
+    networks:
+      - cvs_project_network
+
+  # ─────────────────────────────────────────
+  # n8n — workflow engine & automation
+  # ─────────────────────────────────────────
+  # n8n:
+  #   image: docker.n8n.io/n8nio/n8n:latest
+  #   container_name: cv_pipeline_n8n
+  #   restart: unless-stopped
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   ports:
+  #     - "5679:5678"
+  #   environment:
+  #     # Database
+  #     DB_TYPE: postgresdb
+  #     DB_POSTGRESDB_HOST: postgres
+  #     DB_POSTGRESDB_PORT: 5432
+  #     DB_POSTGRESDB_DATABASE: ${POSTGRES_DB:-cv_pipeline}
+  #     DB_POSTGRESDB_USER: ${N8N_DB_USER:-n8n_user}
+  #     DB_POSTGRESDB_PASSWORD: ${N8N_DB_PASSWORD:-n8n_password_change_in_prod}
+
+  #     # n8n core
+  #     N8N_HOST: 0.0.0.0
+  #     N8N_PORT: 5678
+  #     N8N_PROTOCOL: http
+  #     WEBHOOK_URL: http://localhost:5679/
+
+  #     # Security
+  #     N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:-test_encryption_key_change_in_prod}
+
+  #     # API access (required for MCP bridge)
+  #     N8N_PUBLIC_API_DISABLED: "false"
+  #     N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+
+  #     # Timezone
+  #     GENERIC_TIMEZONE: Africa/Casablanca
+  #     TZ: Africa/Casablanca
+
+  #   volumes:
+  #     - n8n_data:/home/node/.n8n
+  #   networks:
+  #     - cvs_project_network
+
+  # ─────────────────────────────────────────
+  # n8n MCP bridge (AI tool integration)
+  # ─────────────────────────────────────────
+  # n8n_mcp:
+  #   image: mcp/n8n:latest
+  #   container_name: cv_pipeline_n8n_mcp
+  #   restart: unless-stopped
+  #   depends_on:
+  #     - n8n
+  #   environment:
+  #     N8N_API_URL: http://n8n:5678
+  #     N8N_API_KEY: ${N8N_API_KEY}
+  #   healthcheck:
+  #     disable: true
+  #   networks:
+  #     - cvs_project_network
+  #   stdin_open: true
+  #   tty: true
+
+  # ─────────────────────────────────────────
+  # Next.js frontend (Web UI)
+  # ─────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend_enterprise
+      dockerfile: Dockerfile
+    container_name: cv_pipeline_frontend
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./frontend_enterprise:/app
+      - /app/node_modules
+      # Do NOT mount /app/.next as a separate volume — it caches a stale
+      # production build from the image and ignores live source edits.
+    environment:
+      # NEXT_PUBLIC_API_URL: http://api:8000/api/v1
+      WATCHPACK_POLLING: "true"
+    command: npm run dev
+    networks:
+      - cvs_project_network

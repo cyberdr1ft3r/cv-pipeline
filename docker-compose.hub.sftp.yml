@@ -1,0 +1,53 @@
+﻿# Optional infrastructure SFTP/sshfs overlay for docker-compose.hub.yml.
+# Application containers still use normal filesystem paths; this file only owns
+# the external sshfs mount that can make /sftp/cv_tech/files available.
+# Requires: docker plugin install vieux/sshfs
+# Set SFTP_PASSWORD in .env for the sshfs volume driver.
+
+volumes:
+  sftp_files:
+    driver: vieux/sshfs
+    driver_opts:
+      sshcmd: "${SFTP_SSHCMD:-cv_tech_sftp@82.25.119.163:/sftp/cv_tech/files}"
+      port: "${SFTP_PORT:-22}"
+      password: "${SFTP_PASSWORD:?Set SFTP_PASSWORD in .env}"
+      allow_other: ""
+      nonempty: ""
+      reconnect: ""
+      ServerAliveInterval: "10"
+      ServerAliveCountMax: "3"
+
+services:
+  api:
+    environment:
+      CV_STORAGE_ROOT: /sftp/cv_tech/files
+      CV_LIBRARY_ROOT: /sftp/cv_tech/files/CV_Theque
+      DATA_ROOT: /sftp/cv_tech/files/Data
+    volumes:
+      - sftp_files:/sftp/cv_tech/files
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD-SHELL", "ls /sftp/cv_tech/files/Data/current >/dev/null 2>&1 && ls /sftp/cv_tech/files/CV_Theque >/dev/null 2>&1 && ls /sftp/cv_tech/files/staging >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+  watcher:
+    profiles: ["watcher"]
+    environment:
+      CV_STORAGE_ROOT: /sftp/cv_tech/files
+      CV_LIBRARY_ROOT: /sftp/cv_tech/files/CV_Theque
+      DATA_ROOT: /sftp/cv_tech/files/Data
+      WATCHER_STAGING_PATH: /sftp/cv_tech/files/staging
+    volumes:
+      - sftp_files:/sftp/cv_tech/files
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD-SHELL", "ls /sftp/cv_tech/files/staging >/dev/null 2>&1 && ls /sftp/cv_tech/files/CV_Theque >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s

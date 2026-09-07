@@ -1,0 +1,134 @@
+﻿# Docker Hub distribution â€” pull pre-built images (no local source mounts).
+#
+# Local/prod testing with mounted storage:
+#   cp deploy/env.example .env
+#   docker compose -f docker-compose.hub.yml up -d
+#
+# Optional legacy sshfs overlay:
+#   docker compose -f docker-compose.hub.yml -f docker-compose.hub.sftp.yml up -d
+#
+# See DEPLOYMENT.md for full instructions.
+
+name: cv-pipeline
+
+volumes:
+  postgres_data:
+
+networks:
+  cvs_project_network:
+    driver: bridge
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cv_pipeline_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cv_pipeline}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Self-initializing schema on first run: bootstrap applies db_init.sql
+      # (roles/schemas/grants) then every service/migrations/*.sql in order.
+      - ./infrastructure/db_bootstrap.sh:/docker-entrypoint-initdb.d/00_bootstrap.sh:ro
+      - ./infrastructure/db_init.sql:/sql/db_init.sql:ro
+      - ./service/migrations:/sql/migrations:ro
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-cv_pipeline}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cvs_project_network
+
+  api:
+    image: ${DOCKERHUB_USER:?Set DOCKERHUB_USER}/cv-pipeline-api:${IMAGE_TAG:-latest}
+    container_name: cv_pipeline_api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      DATABASE_URL: postgresql://${API_DB_USER:-api_user}:${API_DB_PASSWORD:?Set API_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-cv_pipeline}
+      PYTHONUNBUFFERED: "1"
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-300}
+      CV_STORAGE_ROOT: ${CV_STORAGE_ROOT:-/sftp/cv_tech/files}
+      CV_LIBRARY_ROOT: ${CV_LIBRARY_ROOT:-/sftp/cv_tech/files/CV_Theque}
+      DATA_ROOT: ${DATA_ROOT:-/sftp/cv_tech/files/Data}
+      GOOGLE_DRIVE_ACCESS_TOKEN: ${GOOGLE_DRIVE_ACCESS_TOKEN:-}
+      GOOGLE_DRIVE_API_KEY: ${GOOGLE_DRIVE_API_KEY:-}
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY (min 32 chars)}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3001}
+    volumes:
+      - ${CV_STORAGE_ROOT:-/sftp/cv_tech/files}:/sftp/cv_tech/files
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/api/v1/health >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - cvs_project_network
+
+  watcher:
+    profiles: ["watcher"]
+    image: ${DOCKERHUB_USER}/cv-pipeline-api:${IMAGE_TAG:-latest}
+    container_name: cv_pipeline_watcher
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${API_DB_USER:-api_user}:${API_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-cv_pipeline}
+      PYTHONUNBUFFERED: "1"
+      CV_STORAGE_ROOT: ${CV_STORAGE_ROOT:-/sftp/cv_tech/files}
+      CV_LIBRARY_ROOT: ${CV_LIBRARY_ROOT:-/sftp/cv_tech/files/CV_Theque}
+      DATA_ROOT: ${DATA_ROOT:-/sftp/cv_tech/files/Data}
+      WATCHER_STAGING_PATH: ${WATCHER_STAGING_PATH:-/sftp/cv_tech/files/staging}
+      WATCHER_POLL_INTERVAL_SECONDS: ${WATCHER_POLL_INTERVAL_SECONDS:-30}
+      WATCHER_MAX_WORKERS: ${WATCHER_MAX_WORKERS:-4}
+    volumes:
+      - ${CV_STORAGE_ROOT:-/sftp/cv_tech/files}:/sftp/cv_tech/files
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+    command: python -m script.staging_watcher
+    networks:
+      - cvs_project_network
+
+  frontend:
+    image: ${DOCKERHUB_USER}/cv-pipeline-frontend:${IMAGE_TAG:-latest}
+    container_name: cv_pipeline_frontend
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-3001}:3000"
+    environment:
+      NODE_ENV: production
+    networks:
+      - cvs_project_network
+
+  pgadmin:
+    profiles: ["tools"]
+    image: dpage/pgadmin4
+    container_name: cv_pipeline_pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@admin.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+    ports:
+      - "${PGADMIN_PORT:-5051}:80"
+    networks:
+      - cvs_project_network
+
+

@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ app_name }} | {{ company_name }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+  </head>
+  <body>
+    <div class="page">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="logo-mark">RH</div>
+          <div class="brand-text">
+            <div class="brand-title">{{ app_name }}</div>
+            <div class="brand-subtitle">{{ company_name }}</div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">Assistant RH</div>
+          <div class="panel-text">
+            Posez vos questions sur les candidats, compétences, comparaisons
+            ou statistiques.
+          </div>
+        </div>
+
+        <div class="panel highlight">
+          <div class="panel-title">Conseils rapides</div>
+          <ul class="panel-list">
+            <li>Comparez deux candidats</li>
+            <li>Demandez un top 10</li>
+            <li>Filtrez par ville</li>
+            <li>Listez une compétence</li>
+          </ul>
+        </div>
+
+        <div class="panel status">
+          <div class="status-dot"></div>
+          <div class="panel-text">Connecte aux donnees RH</div>
+        </div>
+      </aside>
+
+      <main class="chat">
+        <header class="chat-header">
+          <div class="chat-title">Discussion</div>
+          <div class="chat-meta">Session RH interactive</div>
+        </header>
+
+        <section id="chat-messages" class="chat-messages">
+          <div class="message bot">
+            <div class="bubble">
+              Bonjour, je suis RH Assistance. Comment puis-je vous aider ?
+            </div>
+          </div>
+        </section>
+
+        <form id="chat-form" class="chat-input">
+          <input
+            id="chat-text"
+            type="text"
+            placeholder="Ecrivez votre question..."
+            autocomplete="off"
+          />
+          <button type="submit">Envoyer</button>
+        </form>
+      </main>
+    </div>
+
+    <div class="bg-orb orb-one"></div>
+    <div class="bg-orb orb-two"></div>
+    <div class="bg-orb orb-three"></div>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+  </body>
+</html>

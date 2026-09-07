@@ -1,0 +1,226 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: #ffffff;
+    --foreground: #030213;
+    --card: #ffffff;
+    --card-foreground: #030213;
+    --popover: #ffffff;
+    --popover-foreground: #030213;
+    --primary: #030213;
+    --primary-foreground: #ffffff;
+    --secondary: #f4f4f5;
+    --secondary-foreground: #030213;
+    --muted: #f4f4f5;
+    --muted-foreground: #717182;
+    --accent: #f4f4f5;
+    --accent-foreground: #030213;
+    --destructive: #d4183d;
+    --destructive-foreground: #ffffff;
+    --border: rgba(0, 0, 0, 0.1);
+    --input: transparent;
+    --ring: #6366f1;
+    --radius: 0.625rem;
+
+    /* Chart Colors */
+    --chart-1: #6366f1;
+    --chart-2: #8b5cf6;
+    --chart-3: #ec4899;
+    --chart-4: #f59e0b;
+    --chart-5: #10b981;
+
+    /* Sidebar Colors */
+    --sidebar-background: #0a0e27;
+    --sidebar-foreground: #f8fafc;
+    --sidebar-primary: #6366f1;
+    --sidebar-border: rgba(255, 255, 255, 0.1);
+    
+    /* IT Road Consulting Premium Dark Theme Colors */
+    --navy-midnight: #0a0e27;
+    --navy-deep: #111827;
+    --slate-dark: #1e293b;
+    --slate-medium: #334155;
+    --indigo-electric: #6366f1;
+    --indigo-bright: #818cf8;
+    --indigo-glow: rgba(99, 102, 241, 0.15);
+  }
+
+  .dark {
+    --background: #0a0e27;
+    --foreground: #f8fafc;
+    --card: #111827;
+    --card-foreground: #f8fafc;
+    --popover: #1e293b;
+    --popover-foreground: #f8fafc;
+    --primary: #6366f1;
+    --primary-foreground: #f8fafc;
+    --secondary: #334155;
+    --secondary-foreground: #f8fafc;
+    --muted: #1e293b;
+    --muted-foreground: #94a3b8;
+    --accent: #334155;
+    --accent-foreground: #f8fafc;
+    --destructive: #ef4444;
+    --destructive-foreground: #ffffff;
+    --border: rgba(148, 163, 184, 0.1);
+    --input: rgba(148, 163, 184, 0.1);
+    --ring: #6366f1;
+
+    /* Sidebar Dark */
+    --sidebar-background: #0a0e27;
+    --sidebar-foreground: #f8fafc;
+    --sidebar-border: rgba(255, 255, 255, 0.1);
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    @apply antialiased;
+  }
+
+  * {
+    letter-spacing: 0;
+  }
+}
+
+@layer utilities {
+  .bg-navy-midnight { background-color: var(--navy-midnight); }
+  .bg-navy-deep { background-color: var(--navy-deep); }
+  .bg-indigo-glow { background-color: var(--indigo-glow); }
+  .text-indigo-bright { color: var(--indigo-bright); }
+  .border-white-10 { border-color: rgba(255, 255, 255, 0.1); }
+
+  .ops-page {
+    background:
+      linear-gradient(rgba(148, 163, 184, 0.035) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(148, 163, 184, 0.035) 1px, transparent 1px),
+      #07111f;
+    background-size: 32px 32px;
+  }
+
+  .ops-panel {
+    border: 1px solid rgba(148, 163, 184, 0.14);
+    background: rgba(9, 18, 32, 0.88);
+    box-shadow: 0 18px 54px rgba(0, 0, 0, 0.24);
+  }
+
+  .ops-surface {
+    border: 1px solid rgba(148, 163, 184, 0.12);
+    background: rgba(15, 23, 42, 0.58);
+  }
+
+  .ops-button-primary {
+    background: #1f9d94;
+    color: white;
+    box-shadow: 0 10px 28px rgba(31, 157, 148, 0.22);
+  }
+
+  .ops-button-primary:hover {
+    background: #28b5aa;
+  }
+
+  .admin-light-main {
+    color: #020617;
+  }
+
+  .admin-light-main .text-white {
+    color: #020617 !important;
+  }
+
+  .admin-light-main .text-slate-200,
+  .admin-light-main .text-slate-300,
+  .admin-light-main .text-slate-400 {
+    color: #475569 !important;
+  }
+
+  .admin-light-main .text-slate-500 {
+    color: #64748b !important;
+  }
+
+  .admin-light-main .border-white\/10,
+  .admin-light-main .border-white\/\[0\.06\],
+  .admin-light-main .border-white\/\[0\.08\] {
+    border-color: #d8e0ea !important;
+  }
+
+  .admin-light-main [class*="bg-white/"],
+  .admin-light-main [class*="bg-white\\["],
+  .admin-light-main [class*="from-slate-800"],
+  .admin-light-main [class*="to-slate-900"],
+  .admin-light-main [class*="bg-slate-800"],
+  .admin-light-main [class*="bg-slate-900"],
+  .admin-light-main [class*="bg-[#0a0f1e]"],
+  .admin-light-main [class*="bg-[#0f1419]"] {
+    background: #ffffff !important;
+  }
+
+  .admin-light-main input,
+  .admin-light-main textarea,
+  .admin-light-main select {
+    background: #ffffff !important;
+    border-color: #d8e0ea !important;
+    color: #020617 !important;
+  }
+
+  .admin-light-main input::placeholder,
+  .admin-light-main textarea::placeholder {
+    color: #94a3b8 !important;
+  }
+
+  .admin-light-main :is(button, a, span, div)[class*="bg-[#1f9d94]"],
+  .admin-light-main :is(button, a, span, div)[class*="bg-[#25afa5]"],
+  .admin-light-main :is(button, a, span, div)[class*="bg-teal-"],
+  .admin-light-main :is(button, a, span, div)[class*="bg-[#1f9d94]"]:hover,
+  .admin-light-main :is(button, a, span, div)[class*="hover:bg-[#25afa5]"]:hover,
+  .admin-light-main :is(button, a, span, div)[class*="hover:bg-teal-"]:hover {
+    background: #2f66ed !important;
+  }
+
+  .admin-light-main :is(button, a, span, div)[class*="border-[#1f9d94]"],
+  .admin-light-main :is(button, a, span, div)[class*="border-teal-"] {
+    border-color: rgba(47, 102, 237, 0.35) !important;
+  }
+
+  .admin-light-main :is(button, a, span, div, p, svg)[class*="text-[#1f9d94]"],
+  .admin-light-main :is(button, a, span, div, p, svg)[class*="text-teal-"] {
+    color: #2f66ed !important;
+  }
+
+  .admin-light-main .bg-\[\#1f9d94\].text-white,
+  .admin-light-main .bg-\[\#25afa5\].text-white,
+  .admin-light-main .bg-indigo-600.text-white,
+  .admin-light-main .bg-blue-600.text-white,
+  .admin-light-main .bg-\[\#2f66ed\].text-white,
+  .admin-light-main button[class*="bg-[#1f9d94]"],
+  .admin-light-main a[class*="bg-[#1f9d94]"],
+  .admin-light-main span[class*="bg-[#1f9d94]"],
+  .admin-light-main button[class*="bg-teal-"],
+  .admin-light-main a[class*="bg-teal-"],
+  .admin-light-main span[class*="bg-teal-"] {
+    color: #ffffff !important;
+  }
+
+  .admin-light-main .hover\:bg-white\/\[0\.03\]:hover,
+  .admin-light-main .hover\:bg-white\/10:hover {
+    background: #f8fafc !important;
+  }
+
+  .admin-light-main .shadow-xl,
+  .admin-light-main .shadow-lg {
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.09) !important;
+  }
+
+  .admin-light-main .ops-panel,
+  .admin-light-card {
+    background: #ffffff;
+    border: 1px solid #d8e0ea;
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+  }
+}

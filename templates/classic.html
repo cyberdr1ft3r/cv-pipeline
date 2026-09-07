@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>CV - {nom_complet}</title>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        @page {{ size: A4; margin: 0; }}
+        body {{ font-family: Calibri, Arial, sans-serif; font-size: 11pt; line-height: 1.15; }}
+        .page {{ width: 21cm; min-height: 29.7cm; background: white; }}
+        
+        /* Header: Text Left, Logo Right */
+        .header {{ 
+            height: 2.5cm; 
+            padding: 0 1cm; 
+            background: #2c3e50; 
+            color: white; 
+            display: flex;
+            justify-content: space-between; 
+            align-items: center;
+        }}
+        .header-text {{
+            text-align: left;
+        }}
+        .header .name {{ font-size: 20pt; font-weight: bold; margin-bottom: 0.1cm; }}
+        .header .profile {{ font-size: 13pt; color: #ecf0f1; }}
+        
+        .logo-container img {{
+            max-height: 1.8cm;
+            max-width: 5cm;
+            object-fit: contain;
+        }}
+        
+        .content {{ display: flex; min-height: calc(29.7cm - 2.5cm); }}
+        .left-column {{ width: 33.33%; padding: 0.5cm; background: #ecf0f1; }}
+        .right-column {{ width: 66.67%; padding: 0.5cm; }}
+        
+        h1 {{ font-size: 13pt; font-weight: bold; margin: 0.4cm 0 0.3cm; color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 0.1cm; }}
+    </style>
+</head>
+<body>
+    <div class="page">
+        <div class="header">
+            <div class="header-text">
+                <div class="name">{nom_complet}</div>
+                <div class="profile">{titre}</div>
+            </div>
+            <div class="logo-container">
+                <img src="{logo_url}" alt="Logo">
+            </div>
+        </div>
+        <div class="content">
+            <div class="left-column">{left_content}</div>
+            <div class="right-column">
+                {right_content_page1}
+                {additional_pages}
+            </div>
+        </div>
+    </div>
+</body>
+</html>

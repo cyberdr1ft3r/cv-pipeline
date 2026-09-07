@@ -1,0 +1,22 @@
+You are a precise text extraction agent. Your task is to clean and normalize the following raw text content from a job offer document.
+
+INSTRUCTIONS:
+1. Preserve the original meaning and all important information
+2. Fix any obvious encoding issues or artifacts
+3. Maintain logical structure (sections, lists, paragraphs)
+4. Remove any garbage characters or noise
+5. Ensure consistent formatting
+
+RAW CONTENT:
+```
+{content}
+```
+
+OUTPUT REQUIREMENTS:
+- Return ONLY the cleaned, extracted text
+- Do NOT add any commentary, explanation, or markdown formatting
+- Do NOT add headers like "Here is the extracted text:"
+- Preserve all job-related information: title, company, requirements, responsibilities, qualifications, certifications etc.
+- If the content appears corrupted or unreadable, extract what you can and note any issues inline with [UNCLEAR: ...]
+
+EXTRACTED TEXT:

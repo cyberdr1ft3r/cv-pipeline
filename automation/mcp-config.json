@@ -1,0 +1,44 @@
+# ─────────────────────────────────────────────────────
+# MCP config for AI tools to connect to mcp/n8n
+# ─────────────────────────────────────────────────────
+# This tells Claude Desktop / Cursor / VS Code Copilot
+# how to reach the mcp/n8n container via Docker.
+#
+# ── Claude Desktop ──────────────────────────────────
+# File location on Windows:
+#   %APPDATA%\Claude\claude_desktop_config.json
+#
+# ── Cursor ──────────────────────────────────────────
+# File location on Windows:
+#   %APPDATA%\Cursor\User\globalStorage\cursor.mcp\mcp.json
+#
+# ── VS Code (GitHub Copilot) ────────────────────────
+# File location on Windows:
+#   %APPDATA%\Code\User\settings.json
+#   Add under "github.copilot.advanced.mcp.servers"
+# ─────────────────────────────────────────────────────
+
+{
+  "mcpServers": {
+    "n8n": {
+      "command": "docker",
+      "args": [
+        "exec",
+        "-i",
+        "n8n_mcp",
+        "node",
+        "/app/dist/mcp/stdio-wrapper.js"
+      ],
+      "env": {}
+    }
+  }
+}
+
+# ─────────────────────────────────────────────────────
+# NOTE: This uses "docker exec" to talk to the already-
+# running n8n_mcp container — much faster than
+# "docker run" which spins up a new container each time.
+#
+# Make sure the n8n_mcp container is running before
+# connecting from any AI tool.
+# ─────────────────────────────────────────────────────

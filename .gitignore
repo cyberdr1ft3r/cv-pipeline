@@ -1,0 +1,109 @@
+# ================================
+# GIT IGNORE - SECURITY CRITICAL
+# ================================
+
+# 🔴 SECURITY: Never commit these files!
+.env
+.venv
+*.key
+*.pem
+secrets/
+credentials/
+.local-secrets/
+
+# API keys and tokens
+*_key.txt
+*_token.txt
+*_secret.txt
+
+# Configuration overrides with sensitive data
+config.local.yaml
+config.prod.yaml
+
+# Directories with data
+data/
+cache/
+*.log
+*.zip
+cookies.txt
+automation/.env.automation
+
+# Virtual Environments
+.venv-ui/
+.venv-frontend/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# IDEs
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+*~
+
+# Node.js
+node_modules/
+package-lock.json
+yarn.lock
+
+# Media (demo videos)
+*.mp4
+*.avi
+*.mov
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+test_runs/**/files/
+test_runs/**/python_deps/
+
+# Temporary files
+*.tmp
+*.bak
+*.backup
+
+# Frontend artifacts
+frontend_enterprise/node_modules/
+frontend_enterprise/.next/
+frontend_enterprise/.env.local
+frontend_enterprise/tsconfig.tsbuildinfo
+
+# Local venvs
+.venv-ui/
+
+# Media / screenshots
+*.mp4
+Screenshot*.png
+Capture d'écran*.png
+
+# Local scratch artifacts
+requirements_fixed.txt
+script/chatbot/requirements_fixed.txt
+script/chatbot/web_backup/
+package-lock.json
+
+# Generated AI assistance outputs
+AI_Assistance/transformed_sessions/
+
+# Ignore innecessary md files from the root except README.md and CHANGELOG.md
+*.md
+!README.md
+!CHANGELOG.md

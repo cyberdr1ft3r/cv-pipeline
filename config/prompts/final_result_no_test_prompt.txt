@@ -1,0 +1,63 @@
+You are an expert HR analyst tasked with producing a final ranked list of candidates.
+
+You are given:
+1. Pre-matched candidate data with AI CV matching scores
+2. The job offer description to evaluate candidate fit
+
+**IMPORTANT**: No technical test scores are available for this session.
+The final score should be based ENTIRELY on the CV matching score (100% weight).
+
+## INPUT DATA
+
+### Job Offer Description:
+{offer_description}
+
+### Pre-Matched Candidate Data:
+The following data contains AI CV matching scores (overall_score).
+Note: test_score is null/None because no test scores file was provided.
+
+{matching_data}
+
+## YOUR TASK
+
+1. **Calculate Final Scores**: Since no test scores are available:
+   final_score = overall_score (100% CV matching score)
+   
+2. **Rank Candidates**: Sort candidates by final_score in descending order (highest score = rank 1)
+
+3. **Evaluate Offer Fit**: For each candidate, assess their ability to succeed in this specific role based on their CV matching analysis
+
+## OUTPUT REQUIREMENTS
+
+Return ONLY a valid JSON object with this exact structure:
+
+```json
+{{
+  "session_id": "{session_id}",
+  "job_title": "{job_title}",
+  "timestamp": "{timestamp}",
+  "total_candidates": <number>,
+  "test_scores_available": false,
+  "scoring_method": "cv_matching_only",
+  "candidates": [
+    {{
+      "name": "<use the exact name from the input data>",
+      "overall_score": <copy the overall_score from input data>,
+      "test_score": null,
+      "final_score": <same as overall_score since no test scores>,
+      "rank": <1, 2, 3, etc.>,
+      "technology_scores": {{}},
+      "unusual_activity_alerts": null,
+      "offer_fit_assessment": "<brief assessment based on CV analysis>"
+    }}
+  ]
+}}
+```
+
+## IMPORTANT NOTES
+
+- Since no test scores are available, `test_score` must be `null` (not 0)
+- `final_score` equals `overall_score` (no weighting needed)
+- `technology_scores` should be an empty object `{{}}`
+- Focus the `offer_fit_assessment` on the CV analysis and skills match
+- Do NOT penalize candidates for missing test scores

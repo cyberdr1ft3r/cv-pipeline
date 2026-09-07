@@ -1,0 +1,25 @@
+# Production overlay for local `docker-compose.yml` development stack.
+# Removes hot-reload and source bind-mounts; uses production commands.
+
+services:
+  api:
+    command: uvicorn service.api:app --host 0.0.0.0 --port 8000
+    volumes:
+      - sftp_data:/sftp/cv_tech/files/Data
+      - sftp_cv_theque:/sftp/cv_tech/files/CV_Theque
+      - ./logs:/app/logs
+      - ./config:/app/config:ro
+
+  watcher:
+    volumes:
+      - ./data:/app/data
+      - sftp_data:/sftp/cv_tech/files/Data
+      - sftp_cv_theque:/sftp/cv_tech/files/CV_Theque
+      - ./logs:/app/logs
+      - ./config:/app/config:ro
+
+  frontend:
+    command: npm start
+    volumes: []
+    environment:
+      NODE_ENV: production

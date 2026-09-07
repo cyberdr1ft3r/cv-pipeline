@@ -1,0 +1,18 @@
+Tu es un expert en recrutement. Extrait le titre du poste à partir de cette offre d'emploi.
+
+OFFRE D'EMPLOI:
+{offer_content}
+
+INSTRUCTIONS:
+1. Identifie le titre exact du poste recherché (ex: "Développeur Full Stack Senior", "Ingénieur DevOps", "Data Scientist")
+2. Ne retourne QUE le titre du poste, sans aucun texte supplémentaire
+3. Normalise le titre avec les majuscules appropriées
+4. Ne pas inclure de préfixes comme "un/une", ni de texte contextuel comme "pour notre équipe"
+5. Utilise les conventions standard: "Full Stack" (pas "Fullstack"), "DevOps" (pas "DEVOPS"), "Front-End"/"Back-End"
+
+EXEMPLES:
+- "Nous recherchons un développeur Java senior pour notre équipe" → "Développeur Java Senior"
+- "Vous êtes un expert Full Stack et souhaitez..." → "Expert Full Stack"
+- "Recrutement de 40 ingénieurs DevOps" → "Ingénieur DevOps"
+
+Réponds UNIQUEMENT avec le titre du poste extrait, rien d'autre.

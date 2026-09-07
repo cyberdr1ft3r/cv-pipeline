@@ -1,0 +1,214 @@
+{
+  "name": "Notify Pipeline Events (Slack)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "pipeline-events",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "7421af01-02e3-4662-b351-f885ff9c685c",
+      "name": "Pipeline Events Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        -848,
+        416
+      ],
+      "webhookId": "4c331748-0301-46f8-a97e-302f49b2f3c9"
+    },
+    {
+      "parameters": {
+        "dataType": "string",
+        "value1": "={{$json.body.event}}",
+        "rules": {
+          "rules": [
+            {
+              "value2": "matching_complete"
+            },
+            {
+              "value2": "final_complete"
+            },
+            {
+              "value2": "format_complete"
+            }
+          ]
+        }
+      },
+      "id": "9025a9be-6e40-498e-8f00-e995a4f6e55b",
+      "name": "Route Event",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 2,
+      "position": [
+        -624,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "SLACK_WEBHOOK_URL_PLACEHOLDER",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"text\": \"✅ Matching completef or session {{$json.body.session_id}} (job {{$json.body.job_id}})\"}\n\n\n\n",
+        "options": {}
+      },
+      "id": "dfbb6286-569d-4a8a-88d2-b51929be321a",
+      "name": "Send Slack (Matching)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        -224,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "SLACK_WEBHOOK_URL_PLACEHOLDER",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"text\":\"✅ Final results ready for session {{$json.body.session_id}} (job {{$json.body.job_id}})\"}\n",
+        "options": {}
+      },
+      "id": "84cb479f-cc2f-4590-b79d-a859b9b6d282",
+      "name": "Send Slack (Final)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        -224,
+        416
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "SLACK_WEBHOOK_URL_PLACEHOLDER",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"text\": \"✅ Formatedd CVs phase complete for session {{$json.body.session_id}} (job {{$json.body.job_id}})\"}\n\n",
+        "options": {}
+      },
+      "id": "fa58e7a9-d511-4cf1-9afa-f4dc51bdcf88",
+      "name": "Send Slack (Format)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        -224,
+        576
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "2811d117-a5da-48da-992e-e4831497907d",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        176,
+        416
+      ]
+    }
+  ],
+  "pinData": {
+    "Send Slack (Format)": [
+      {
+        "json": {
+          "name": "First item",
+          "code": 1
+        }
+      },
+      {
+        "json": {
+          "name": "Second item",
+          "code": 2
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Pipeline Events Webhook": {
+      "main": [
+        [
+          {
+            "node": "Route Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Event": {
+      "main": [
+        [
+          {
+            "node": "Send Slack (Matching)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Slack (Final)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Slack (Format)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Slack (Matching)": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Slack (Final)": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Slack (Format)": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "d63d6a25-f121-40f7-98f9-e2cc47ea80b9",
+  "meta": {
+    "instanceId": "058603a26ef382eff5509baea1fc9732006d12b39c7c6e5298a474710f6eb1a2"
+  },
+  "id": "etGybUT16fnY0vy8",
+  "tags": []
+}

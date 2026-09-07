@@ -1,0 +1,11 @@
+"skills": ONLY concrete technical skills (compétences techniques atomiques).
+
+Rules:
+- Each skill must be 1-3 words maximum
+- Extract: programming languages (Python, Java, C++), frameworks (React, Django, Spring), tools (Docker, Kubernetes, Git, Jira), platforms (AWS, Azure, GCP, OpenShift), databases (PostgreSQL, MySQL, MongoDB), methodologies ONLY if technical (CI/CD, Agile, Scrum)
+- DO NOT extract: soft skills, behavioral traits, full sentences, descriptions, requirements
+- DO NOT extract: "autonomie", "initiative", "propreté du code", "documentation", "apprentissage de nouvelles technologies"
+- Split comma-separated lists into individual skills: "C, C++, C#, Java" → ["C", "C++", "C#", "Java"]
+- Maximum 15 skills per offer
+- Example good: ["Python", "Docker", "Kubernetes", "CI/CD", "PostgreSQL", "React"]
+- Example bad: ["Expérience en développement Web", "Autonomie et initiative", "Programmation en C, C++, C#, Java, JavaScript, Python"],
