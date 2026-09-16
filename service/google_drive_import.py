@@ -6,6 +6,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import deque
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -14,6 +15,15 @@ DRIVE_API_BASE = "https://www.googleapis.com/drive/v3"
 DRIVE_FILE_RE = re.compile(r"/file/d/([^/]+)")
 DRIVE_FOLDER_RE = re.compile(r"/folders/([^/?#]+)")
 DRIVE_OPEN_ID_RE = re.compile(r"[?&]id=([^&#]+)")
+DRIVE_FOLDER_MIME = "application/vnd.google-apps.folder"
+SUPPORTED_FILE_MIME_TYPES = frozenset(
+    {
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/msword",
+    }
+)
+MAX_FOLDER_SCAN = 1000
 
 
 class GoogleDriveImportError(RuntimeError):
@@ -51,32 +61,71 @@ def extract_drive_id(url_or_id: str, *, folder: bool = False) -> str:
 
 def list_folder_files(folder_url_or_id: str, *, max_files: int = 50) -> list[DriveFile]:
     folder_id = extract_drive_id(folder_url_or_id, folder=True)
-    query = (
-        f"'{folder_id}' in parents and trashed = false and "
-        "("
-        "mimeType = 'application/pdf' or "
-        "mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' or "
-        "mimeType = 'application/msword'"
-        ")"
-    )
-    params = {
-        "q": query,
-        "pageSize": str(max(1, min(max_files, 100))),
-        "fields": "files(id,name,mimeType,size,webViewLink)",
-        "supportsAllDrives": "true",
-        "includeItemsFromAllDrives": "true",
-    }
-    data = _drive_json("/files", params)
-    return [
-        DriveFile(
-            file_id=item["id"],
-            name=item.get("name") or f"{item['id']}.pdf",
-            mime_type=item.get("mimeType") or "",
-            size=int(item["size"]) if item.get("size") else None,
-            web_url=item.get("webViewLink"),
-        )
-        for item in data.get("files", [])
-    ]
+    limit = max(1, min(max_files, 100))
+
+    pending = deque([folder_id])
+    queued_folders = {folder_id}
+    seen_folders: set[str] = set()
+    seen_files: set[str] = set()
+    result: list[DriveFile] = []
+
+    while pending and len(result) < limit:
+        current_folder = pending.popleft()
+        if current_folder in seen_folders:
+            continue
+
+        seen_folders.add(current_folder)
+        if len(seen_folders) > MAX_FOLDER_SCAN:
+            raise GoogleDriveImportError(
+                "Google Drive folder tree is too large to scan safely."
+            )
+
+        page_token: str | None = None
+        while len(result) < limit:
+            params = {
+                "q": f"'{current_folder}' in parents and trashed = false",
+                "pageSize": "100",
+                "fields": "nextPageToken,files(id,name,mimeType,size,webViewLink)",
+                "supportsAllDrives": "true",
+                "includeItemsFromAllDrives": "true",
+            }
+            if page_token:
+                params["pageToken"] = page_token
+
+            data = _drive_json("/files", params)
+            for item in data.get("files", []):
+                item_id = item.get("id")
+                mime_type = item.get("mimeType") or ""
+                if not item_id:
+                    continue
+
+                if mime_type == DRIVE_FOLDER_MIME:
+                    if item_id not in queued_folders:
+                        queued_folders.add(item_id)
+                        pending.append(item_id)
+                    continue
+
+                if mime_type not in SUPPORTED_FILE_MIME_TYPES or item_id in seen_files:
+                    continue
+
+                seen_files.add(item_id)
+                result.append(
+                    DriveFile(
+                        file_id=item_id,
+                        name=item.get("name") or f"{item_id}.pdf",
+                        mime_type=mime_type,
+                        size=int(item["size"]) if item.get("size") else None,
+                        web_url=item.get("webViewLink"),
+                    )
+                )
+                if len(result) >= limit:
+                    break
+
+            page_token = data.get("nextPageToken")
+            if not page_token:
+                break
+
+    return result
 
 
 def get_file_metadata(file_url_or_id: str) -> DriveFile:
