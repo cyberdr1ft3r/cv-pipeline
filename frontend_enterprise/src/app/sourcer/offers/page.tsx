@@ -1,6 +1,6 @@
 ﻿'use client';
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation'; // kept for potential future use
@@ -116,7 +116,7 @@ function InlineProgress({ jobId }: { jobId: string }) {
   );
 }
 
-export default function SourcerOffersPage() {
+function SourcerOffersContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [offers, setOffers] = useState<Offer[]>([]);
@@ -309,5 +309,9 @@ export default function SourcerOffersPage() {
       </div>
     </div>
   );
+}
+
+export default function SourcerOffersPage() {
+  return <Suspense fallback={null}><SourcerOffersContent /></Suspense>;
 }
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { AlertCircle, BarChart3, ChevronDown, Loader2 } from 'lucide-react';
 import { PipelineShell } from '@/app/components/pipeline/PipelineShell';
@@ -69,7 +69,7 @@ function formatScore(score: number | null | undefined): string {
   return `${normalized.toFixed(0)}%`;
 }
 
-export default function MatchingResultsPage() {
+function MatchingResultsContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const jobId = searchParams.get('jobId');
@@ -322,4 +322,8 @@ export default function MatchingResultsPage() {
       </div>
     </PipelineShell>
   );
+}
+
+export default function MatchingResultsPage() {
+  return <Suspense fallback={null}><MatchingResultsContent /></Suspense>;
 }

@@ -1,12 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { FileText, Loader2, Upload } from 'lucide-react';
 import { PipelineShell } from '@/app/components/pipeline/PipelineShell';
 import { usePipeline } from '@/hooks/usePipeline';
 
-export default function TestUploadPage() {
+function TestUploadContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const jobId = searchParams.get('jobId');
@@ -234,4 +234,8 @@ export default function TestUploadPage() {
       </div>
     </PipelineShell>
   );
+}
+
+export default function TestUploadPage() {
+  return <Suspense fallback={null}><TestUploadContent /></Suspense>;
 }
