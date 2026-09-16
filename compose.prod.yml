@@ -42,6 +42,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${API_DB_USER:-api_user}:${API_DB_PASSWORD:?Set API_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-cv_pipeline}
       SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY}
+      COOKIE_SECURE: ${COOKIE_SECURE:?Set COOKIE_SECURE}
       CORS_ORIGINS: ${CORS_ORIGINS:?Set CORS_ORIGINS}
       RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-300}
       CV_STORAGE_ROOT: /sftp/cv_tech/files
@@ -52,6 +53,15 @@ services:
       GOOGLE_DRIVE_API_KEY: ${GOOGLE_DRIVE_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       PYTHONUNBUFFERED: "1"
+    command:
+      - uvicorn
+      - service.api:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --proxy-headers
+      - --forwarded-allow-ips=*
     volumes:
       - cv_storage:/sftp/cv_tech/files
       - api_logs:/app/logs
@@ -65,7 +75,6 @@ services:
     networks: [app, database]
 
   watcher:
-    profiles: ["watcher"]
     image: dr1f73r/cv-pipeline-api:${CV_PIPELINE_VERSION:?Set CV_PIPELINE_VERSION}
     restart: unless-stopped
     depends_on:
@@ -81,13 +90,19 @@ services:
       WATCHER_STAGING_PATH: /sftp/cv_tech/files/staging
       WATCHER_POLL_INTERVAL_SECONDS: ${WATCHER_POLL_INTERVAL_SECONDS:-30}
       WATCHER_MAX_WORKERS: ${WATCHER_MAX_WORKERS:-4}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?Set OPENROUTER_API_KEY}
       PYTHONUNBUFFERED: "1"
     volumes:
       - cv_storage:/sftp/cv_tech/files
       - api_logs:/app/logs
       - ./config:/app/config:ro
     command: ["python", "-m", "script.staging_watcher"]
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     networks: [app, database]
 
   frontend:

@@ -43,6 +43,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${API_DB_USER:-api_user}:${API_DB_PASSWORD:-dev-api-only}@postgres:5432/${POSTGRES_DB:-cv_pipeline}
       SECRET_KEY: ${SECRET_KEY:-development-secret-key-change-before-production}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3001}
       CV_STORAGE_ROOT: /sftp/cv_tech/files
       CV_LIBRARY_ROOT: /sftp/cv_tech/files/CV_Theque

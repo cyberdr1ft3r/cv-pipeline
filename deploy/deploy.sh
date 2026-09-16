@@ -28,11 +28,36 @@ export CV_PIPELINE_VERSION="$VERSION"
 compose() {
   docker compose --env-file "$ENV_FILE" -f "$ROOT_DIR/compose.prod.yml" "$@"
 }
+
+verify_required_services() {
+  for service in postgres api watcher frontend proxy; do
+    container_id=$(compose ps -q "$service")
+    if [ -z "$container_id" ]; then
+      echo "required service has no container: $service" >&2
+      return 1
+    fi
+
+    state=$(docker inspect --format '{{.State.Status}} {{.State.Restarting}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_id")
+    set -- $state
+    status=$1
+    restarting=$2
+    health=$3
+    if [ "$status" != "running" ] || [ "$restarting" != "false" ]; then
+      echo "required service is not stably running: $service ($state)" >&2
+      return 1
+    fi
+    if [ "$health" != "none" ] && [ "$health" != "healthy" ]; then
+      echo "required service is not healthy: $service ($state)" >&2
+      return 1
+    fi
+  done
+}
+
 compose config --quiet
 compose pull
 compose up -d --remove-orphans
 PROXY_ADDRESS=$(compose port proxy 80 | tail -n 1)
-if ! CV_PIPELINE_HEALTH_URL="http://$PROXY_ADDRESS" "$ROOT_DIR/deploy/healthcheck.sh"; then
+if ! CV_PIPELINE_HEALTH_URL="http://$PROXY_ADDRESS" "$ROOT_DIR/deploy/healthcheck.sh" || ! verify_required_services; then
   echo "deployment failed health checks" >&2
   if [ -n "$CURRENT_VERSION" ]; then
     echo "restoring previously deployed image version" >&2
