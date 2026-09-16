@@ -43,6 +43,7 @@ class Config:
     
     # LLM Configuration - load from YAML if available, else use defaults
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+    SESSION_SECRET_KEY = os.getenv("CHATBOT_SESSION_SECRET", "")
     if _yaml_config and 'api' in _yaml_config:
         LLM_MODEL = _yaml_config['api'].get('model', 'meta-llama/llama-3.3-70b-instruct:free')
         LLM_TEMPERATURE = _yaml_config['api'].get('temperature', 0.0)

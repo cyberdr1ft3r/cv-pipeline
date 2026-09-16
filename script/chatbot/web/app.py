@@ -22,7 +22,9 @@ COMPANY_NAME = "IT Road Consulting"
 
 def create_app() -> Flask:
     app = Flask(__name__, template_folder="templates", static_folder="static")
-    app.secret_key = "rh-assistance-dev-key"
+    if not config.SESSION_SECRET_KEY:
+        raise RuntimeError("CHATBOT_SESSION_SECRET is required to start the chatbot web app.")
+    app.secret_key = config.SESSION_SECRET_KEY
 
     # Auto-sync latest data from archive
     if config.AUTO_SYNC_ON_STARTUP:
@@ -114,4 +116,4 @@ def create_app() -> Flask:
 
 if __name__ == "__main__":
     app = create_app()
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=config.DEBUG)

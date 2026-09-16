@@ -49,9 +49,13 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-cv_pipeline}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      API_DB_PASSWORD: ${API_DB_PASSWORD:-dev-api-only}
+      N8N_DB_PASSWORD: ${N8N_DB_PASSWORD:-dev-n8n-only}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./infrastructure/db_init.sql:/docker-entrypoint-initdb.d/01_init.sql
+      - ./infrastructure/db_bootstrap.sh:/docker-entrypoint-initdb.d/00_bootstrap.sh:ro
+      - ./infrastructure/db_init.sql:/sql/db_init.sql:ro
+      - ./service/migrations:/sql/migrations:ro
     ports:
       - "5432:5432"
     healthcheck:
@@ -87,7 +91,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql://${API_DB_USER:-api_user}:${API_DB_PASSWORD:-api_password_change_in_prod}@postgres:5432/${POSTGRES_DB:-cv_pipeline}
+      DATABASE_URL: postgresql://${API_DB_USER:-api_user}:${API_DB_PASSWORD:-dev-api-only}@postgres:5432/${POSTGRES_DB:-cv_pipeline}
       PYTHONUNBUFFERED: 1
       RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-300}
       # Action 255: hardcoded — must match sftp_data volume mount below so api and
@@ -128,7 +132,7 @@ services:
         condition: service_healthy
     environment:
       PYTHONUNBUFFERED: "1"
-      DATABASE_URL: postgresql://${API_DB_USER:-api_user}:${API_DB_PASSWORD:-api_password_change_in_prod}@postgres:5432/${POSTGRES_DB:-cv_pipeline}
+      DATABASE_URL: postgresql://${API_DB_USER:-api_user}:${API_DB_PASSWORD:-dev-api-only}@postgres:5432/${POSTGRES_DB:-cv_pipeline}
       # WATCHER_* vars have safe defaults — override here to tune without editing config/.env
       WATCHER_STAGING_PATH: ${WATCHER_STAGING_PATH:-/sftp/cv_tech/files/staging}
       WATCHER_POLL_INTERVAL_SECONDS: ${WATCHER_POLL_INTERVAL_SECONDS:-30}
@@ -179,7 +183,7 @@ services:
   #     DB_POSTGRESDB_PORT: 5432
   #     DB_POSTGRESDB_DATABASE: ${POSTGRES_DB:-cv_pipeline}
   #     DB_POSTGRESDB_USER: ${N8N_DB_USER:-n8n_user}
-  #     DB_POSTGRESDB_PASSWORD: ${N8N_DB_PASSWORD:-n8n_password_change_in_prod}
+  #     DB_POSTGRESDB_PASSWORD: ${N8N_DB_PASSWORD:?Set N8N_DB_PASSWORD}
 
   #     # n8n core
   #     N8N_HOST: 0.0.0.0
