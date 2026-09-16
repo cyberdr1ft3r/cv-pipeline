@@ -46,10 +46,11 @@ COPY script/requirements.txt /app/script/requirements.txt
 RUN pip install --upgrade pip setuptools wheel \
     && pip install -r /app/service/requirements.txt -r /app/script/requirements.txt
 
-COPY . /app
-
 # Install Playwright browsers
 RUN python -m playwright install chromium
+
+# Keep application changes after dependency/browser layers for repeatable fast rebuilds.
+COPY . /app
 
 EXPOSE 8000
 

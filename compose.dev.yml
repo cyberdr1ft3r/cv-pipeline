@@ -1,0 +1,99 @@
+name: cv-pipeline-dev
+
+volumes:
+  postgres_dev:
+  cv_storage_dev:
+
+networks:
+  app:
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cv_pipeline}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev-postgres-only}
+      API_DB_PASSWORD: ${API_DB_PASSWORD:-dev-api-only}
+      N8N_DB_PASSWORD: ${N8N_DB_PASSWORD:-dev-n8n-only}
+    volumes:
+      - postgres_dev:/var/lib/postgresql/data
+      - ./infrastructure/db_bootstrap.sh:/docker-entrypoint-initdb.d/00_bootstrap.sh:ro
+      - ./infrastructure/db_init.sql:/sql/db_init.sql:ro
+      - ./service/migrations:/sql/migrations:ro
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-cv_pipeline}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [app]
+
+  api:
+    build:
+      context: .
+      dockerfile: service/Dockerfile
+    image: cv-pipeline-api:dev
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${API_DB_USER:-api_user}:${API_DB_PASSWORD:-dev-api-only}@postgres:5432/${POSTGRES_DB:-cv_pipeline}
+      SECRET_KEY: ${SECRET_KEY:-development-secret-key-change-before-production}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3001}
+      CV_STORAGE_ROOT: /sftp/cv_tech/files
+      CV_LIBRARY_ROOT: /sftp/cv_tech/files/CV_Theque
+      DATA_ROOT: /sftp/cv_tech/files/Data
+      GOOGLE_DRIVE_ACCESS_TOKEN: ${GOOGLE_DRIVE_ACCESS_TOKEN:-}
+      GOOGLE_DRIVE_API_KEY: ${GOOGLE_DRIVE_API_KEY:-}
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - cv_storage_dev:/sftp/cv_tech/files
+      - ./config:/app/config:ro
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/api/v1/health >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks: [app]
+
+  frontend:
+    build:
+      context: ./frontend_enterprise
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: /api/v1
+    image: cv-pipeline-frontend:dev
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      INTERNAL_API_URL: http://api:8000
+      NODE_ENV: production
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-3001}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/ >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks: [app]
+
+  pgadmin:
+    profiles: ["tools"]
+    image: dpage/pgadmin4:9
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@example.invalid}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-dev-pgadmin-only}
+    ports:
+      - "127.0.0.1:${PGADMIN_PORT:-5051}:80"
+    networks: [app]

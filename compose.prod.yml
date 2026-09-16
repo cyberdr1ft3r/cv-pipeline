@@ -1,0 +1,141 @@
+name: cv-pipeline
+
+volumes:
+  postgres_data:
+  cv_storage:
+  api_logs:
+
+networks:
+  edge:
+  app:
+  database:
+    internal: true
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cv_pipeline}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      API_DB_PASSWORD: ${API_DB_PASSWORD:?Set API_DB_PASSWORD}
+      N8N_DB_PASSWORD: ${N8N_DB_PASSWORD:?Set N8N_DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/db_bootstrap.sh:/docker-entrypoint-initdb.d/00_bootstrap.sh:ro
+      - ./infrastructure/db_init.sql:/sql/db_init.sql:ro
+      - ./service/migrations:/sql/migrations:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-cv_pipeline}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [database]
+
+  api:
+    image: dr1f73r/cv-pipeline-api:${CV_PIPELINE_VERSION:?Set CV_PIPELINE_VERSION}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${API_DB_USER:-api_user}:${API_DB_PASSWORD:?Set API_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-cv_pipeline}
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY}
+      CORS_ORIGINS: ${CORS_ORIGINS:?Set CORS_ORIGINS}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-300}
+      CV_STORAGE_ROOT: /sftp/cv_tech/files
+      CV_LIBRARY_ROOT: /sftp/cv_tech/files/CV_Theque
+      DATA_ROOT: /sftp/cv_tech/files/Data
+      WATCHER_STAGING_PATH: /sftp/cv_tech/files/staging
+      GOOGLE_DRIVE_ACCESS_TOKEN: ${GOOGLE_DRIVE_ACCESS_TOKEN:-}
+      GOOGLE_DRIVE_API_KEY: ${GOOGLE_DRIVE_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - cv_storage:/sftp/cv_tech/files
+      - api_logs:/app/logs
+      - ./config:/app/config:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/api/v1/health >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks: [app, database]
+
+  watcher:
+    profiles: ["watcher"]
+    image: dr1f73r/cv-pipeline-api:${CV_PIPELINE_VERSION:?Set CV_PIPELINE_VERSION}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${API_DB_USER:-api_user}:${API_DB_PASSWORD:?Set API_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-cv_pipeline}
+      CV_STORAGE_ROOT: /sftp/cv_tech/files
+      CV_LIBRARY_ROOT: /sftp/cv_tech/files/CV_Theque
+      DATA_ROOT: /sftp/cv_tech/files/Data
+      WATCHER_STAGING_PATH: /sftp/cv_tech/files/staging
+      WATCHER_POLL_INTERVAL_SECONDS: ${WATCHER_POLL_INTERVAL_SECONDS:-30}
+      WATCHER_MAX_WORKERS: ${WATCHER_MAX_WORKERS:-4}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - cv_storage:/sftp/cv_tech/files
+      - api_logs:/app/logs
+      - ./config:/app/config:ro
+    command: ["python", "-m", "script.staging_watcher"]
+    networks: [app, database]
+
+  frontend:
+    image: dr1f73r/cv-pipeline-frontend:${CV_PIPELINE_VERSION:?Set CV_PIPELINE_VERSION}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      INTERNAL_API_URL: http://api:8000
+      NODE_ENV: production
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/ >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks: [app]
+
+  proxy:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      frontend:
+        condition: service_healthy
+    ports:
+      - "${HTTP_BIND_ADDRESS:-127.0.0.1}:${HTTP_PORT:-8080}:80"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks: [edge, app]
+
+  pgadmin:
+    profiles: ["tools"]
+    image: dpage/pgadmin4:9
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:?Set PGADMIN_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:?Set PGADMIN_PASSWORD}
+    ports:
+      - "127.0.0.1:${PGADMIN_PORT:-5051}:80"
+    networks: [database]
