@@ -11,6 +11,7 @@ import { AnimatedKpiCard } from '@/components/admin/AnimatedKpiCard';
 import { usePrefersReducedMotion } from '@/hooks/usePrefersReducedMotion';
 import { sourcerOffersUrl, type SourcerDashboardBucket } from '@/lib/offerStatusRoutes';
 import { SOURCER_KPI_HELP } from '@/lib/spaceMetricHelp';
+import { apiGet } from '@/lib/apiClient';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
 
@@ -118,8 +119,10 @@ export default function SourcerDashboardPage() {
   const fetchData = () => {
     setLoading(true);
     Promise.all([
-      fetch(`${API_BASE}/auth/me`, { credentials: 'include' }).then(r => r.ok ? r.json() : null),
-      fetch(`${API_BASE}/sourcer/dashboard`, { credentials: 'include' }).then(r => r.ok ? r.json() : null),
+      // Unwrapped to null on failure so the dashboard degrades rather than
+      // breaking; the layout's heartbeat owns session expiry for this page.
+      apiGet<any>('/auth/me').then(result => (result.ok ? result.data : null)),
+      apiGet<any>('/sourcer/dashboard').then(result => (result.ok ? result.data : null)),
     ]).then(([me, dashboard]) => {
       if (me) setUserName(me.full_name);
       setDash(dashboard);

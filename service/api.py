@@ -141,6 +141,7 @@ def calculate_job_progress(stage: str, status: str) -> dict[str, int]:
 from service.security import (
     verify_token, TokenPayload, create_access_token,
     verify_password, hash_password, SECRET_KEY_VALID,
+    ACCESS_TOKEN_EXPIRE_SECONDS, SESSION_RENEW_THRESHOLD_SECONDS,
 )
 from service.user_store import (
     get_user_by_email, get_user_by_email_any, get_user_by_id, update_last_login, get_sourcers,
@@ -1632,21 +1633,76 @@ async def auth_login(body: _LoginRequest, response: Response):
         actor_name=user.full_name,
     )
 
-    response.set_cookie(
-        key="access_token",
-        value=token,
-        httponly=True,
-        samesite="lax",
-        secure=COOKIE_SECURE,
-        max_age=1800,   # 30 minutes
-        path="/",       # explicit â€” ensures cookie is sent for all API paths
-    )
+    _set_access_token_cookie(response, token)
     security_logger.info(f"Successful login: {user.email} role={user.role}")
     return {
         "user_id": str(user.id),
         "email": user.email,
         "full_name": user.full_name,
         "role": user.role,
+    }
+
+
+def _set_access_token_cookie(response: Response, token: str) -> None:
+    """Write the session cookie.
+
+    Max-Age is derived from ACCESS_TOKEN_EXPIRE_SECONDS rather than a separate
+    literal so the cookie and the JWT inside it can never drift apart. Shared by
+    login and renewal so the two paths cannot diverge in their security
+    attributes either.
+
+    path="/" is explicit: it keeps the cookie on every API path and, just as
+    importantly, stops a second access_token cookie being created at a narrower
+    path that would shadow this one.
+    """
+    response.set_cookie(
+        key="access_token",
+        value=token,
+        httponly=True,
+        samesite="lax",
+        secure=COOKIE_SECURE,
+        max_age=ACCESS_TOKEN_EXPIRE_SECONDS,
+        path="/",
+    )
+
+
+@app.post("/api/v1/auth/renew")
+async def auth_renew(
+    response: Response,
+    current_user: TokenPayload = Depends(get_current_user),
+):
+    """Issue a fresh access token for an already-authenticated session.
+
+    This is what makes the session sliding: an active user is re-credentialed
+    before the 30-minute token expires, while an idle user still expires
+    normally because nothing calls this.
+
+    It is deliberately not a refresh-token endpoint. It requires a currently
+    valid access token, so it cannot resurrect an expired or revoked session,
+    and get_current_user re-reads the user on every call, so a deactivated or
+    deleted account is rejected here exactly as it is everywhere else.
+
+    The new token carries the role read from the database, not the role from the
+    old token, so a role change takes effect on the next renewal instead of
+    persisting until the user happens to log out.
+    """
+    token = create_access_token(
+        {
+            "sub": current_user.sub,
+            "role": current_user.role,
+            "email": current_user.email,
+        }
+    )
+    _set_access_token_cookie(response, token)
+    security_logger.info(
+        "Session renewed: %s role=%s", current_user.email, current_user.role
+    )
+    return {
+        "user_id": current_user.sub,
+        "email": current_user.email,
+        "role": current_user.role,
+        "expires_in": ACCESS_TOKEN_EXPIRE_SECONDS,
+        "renew_after": ACCESS_TOKEN_EXPIRE_SECONDS - SESSION_RENEW_THRESHOLD_SECONDS,
     }
 
 

@@ -10,6 +10,7 @@ import { CandidateAppearanceRow } from '@/components/CandidateAppearanceRow';
 import { UnreliabilityFlagIndicator, type UnreliabilityFlagInfo } from '@/components/UnreliabilityFlagIndicator';
 import { CARD_CLASS, INPUT_CLASS } from '@/lib/uiTokens';
 import type { SkillLike } from '@/lib/skillUtils';
+import { apiGet, failureMessage, isSessionExpired, redirectToLogin } from '@/lib/apiClient';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
 
@@ -62,19 +63,30 @@ export default function SourcerCandidateDetailPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   function reload() {
-    fetch(`${API_BASE}/candidates/${id}`, { credentials: 'include' })
-      .then(r => r.ok ? r.json() : Promise.reject())
-      .then(d => { setData(d); setLoading(false); })
-      .catch(() => setLoading(false));
+    // A 401 must send the user to login rather than render as "not found";
+    // a 403 or a server error is shown as an error and leaves the session alone.
+    apiGet<CandidateDetail>(`/candidates/${id}`).then(result => {
+      if (result.ok) {
+        setData(result.data);
+        setLoadError(null);
+      } else if (isSessionExpired(result)) {
+        redirectToLogin();
+        return;
+      } else {
+        setLoadError(failureMessage(result));
+      }
+      setLoading(false);
+    });
   }
 
   useEffect(() => {
     reload();
-    fetch(`${API_BASE}/auth/me`, { credentials: 'include' })
-      .then(r => r.ok ? r.json() : null)
-      .then(u => { if (u?.user_id) setCurrentUserId(u.user_id); });
+    apiGet<{ user_id?: string }>('/auth/me').then(result => {
+      if (result.ok && result.data.user_id) setCurrentUserId(result.data.user_id);
+    });
   }, [id]);
 
   async function saveAvailability(field: string, value: unknown) {
@@ -90,6 +102,21 @@ export default function SourcerCandidateDetailPage() {
   }
 
   if (loading) return <div className="flex justify-center h-48"><Loader2 className="h-8 w-8 animate-spin text-[#1f9d94] mt-12" /></div>;
+  // A failed load is not the same as a candidate that does not exist.
+  if (loadError) {
+    return (
+      <div className="rounded-xl border border-amber-200 bg-amber-50 px-6 py-8 text-amber-900">
+        <p className="font-semibold">Impossible de charger ce candidat</p>
+        <p className="mt-1 text-sm">{loadError}</p>
+        <button
+          onClick={() => { setLoading(true); setLoadError(null); reload(); }}
+          className="mt-4 rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-amber-700"
+        >
+          Réessayer
+        </button>
+      </div>
+    );
+  }
   if (!data) return <p className="text-slate-400">Candidat introuvable.</p>;
 
   const c = data.candidate;
