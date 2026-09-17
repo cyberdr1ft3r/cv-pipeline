@@ -51,24 +51,45 @@ export function failureMessage(result: ApiFailure<unknown>): string {
 }
 
 /**
+ * The four things a renewal attempt can tell us. A single boolean was not
+ * enough: it made "your session is over" indistinguishable from "the server is
+ * having a bad minute", so a blip logged the user out.
+ */
+export type RenewOutcome =
+  | 'renewed'
+  | 'unauthenticated'
+  | 'forbidden'
+  | 'transient-error';
+
+/** Only this outcome may end a session. */
+export function isConclusiveLogout(outcome: RenewOutcome): boolean {
+  return outcome === 'unauthenticated';
+}
+
+/**
  * Ask the API for a fresh access token for the current session.
  *
- * Returns false when the session cannot be renewed, which is the signal to stop
- * retrying. Callers must never loop on a false return: that is how an
- * unauthenticated refresh loop starts.
+ * Never throws, and never loops: callers act on the outcome once. Only a 401 is
+ * a statement that the session is over. A 403 means the caller is authenticated
+ * but not permitted, and 5xx or a dropped connection say nothing about the
+ * session at all, so both leave it untouched for a later attempt.
  */
-export async function renewSession(): Promise<boolean> {
+export async function renewSession(): Promise<RenewOutcome> {
+  let response: Response;
   try {
-    const response = await fetch(`${API_BASE}/auth/renew`, {
+    response = await fetch(`${API_BASE}/auth/renew`, {
       method: 'POST',
       credentials: 'include',
       cache: 'no-store',
     });
-    return response.ok;
   } catch {
-    // A network failure is not an expired session; do not log the user out.
-    return false;
+    return 'transient-error';
   }
+
+  if (response.ok) return 'renewed';
+  if (response.status === 401) return 'unauthenticated';
+  if (response.status === 403) return 'forbidden';
+  return 'transient-error';
 }
 
 async function readBody(response: Response): Promise<unknown> {
@@ -127,8 +148,10 @@ export async function apiRequest<T = unknown>(
   }
 
   if (response.status === 401 && allowRenew) {
-    const renewed = await renewSession();
-    if (renewed) {
+    // The request itself already returned 401, so the token is known bad. The
+    // renewal only decides whether a retry is worth making.
+    const outcome = await renewSession();
+    if (outcome === 'renewed') {
       try {
         response = await send(path, requestInit);
       } catch (error) {

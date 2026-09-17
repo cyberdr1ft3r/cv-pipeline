@@ -13,10 +13,12 @@ import {
   apiGet,
   apiRequest,
   failureMessage,
+  isConclusiveLogout,
   isForbidden,
   isSessionExpired,
   renewSession,
   type ApiFailure,
+  type RenewOutcome,
 } from '../src/lib/apiClient.ts';
 
 type Call = { url: string; init: RequestInit };
@@ -184,20 +186,70 @@ test('every failure kind has a distinct user-facing message', async () => {
   assert.equal(messages.size, 4);
 });
 
-// ── Renewal loop safety ──────────────────────────────────────────────────────
+// ── Renewal outcomes are discriminated, not boolean ──────────────────────────
+//
+// A single boolean made "your session is over" indistinguishable from "the
+// server is having a bad minute", and the heartbeat logged the user out for
+// both.
 
-test('renewSession reports failure instead of throwing on a dead network', async () => {
-  stubFetch([new TypeError('offline')]);
-  assert.equal(await renewSession(), false);
+test('renewSession returns renewed on 200', async () => {
+  stubFetch([json(200, { expires_in: 1800 })]);
+  assert.equal(await renewSession(), 'renewed');
 });
 
-test('renewSession reports failure on a 401 and does not recurse', async () => {
+test('renewSession returns unauthenticated on 401', async () => {
   const calls = stubFetch([json(401, {})]);
-  assert.equal(await renewSession(), false);
+  assert.equal(await renewSession(), 'unauthenticated');
   assert.equal(calls.length, 1, 'renewal must never try to renew itself');
 });
 
-test('renewSession succeeds on 200', async () => {
-  stubFetch([json(200, { expires_in: 1800 })]);
-  assert.equal(await renewSession(), true);
+test('renewSession returns forbidden on 403', async () => {
+  stubFetch([json(403, {})]);
+  assert.equal(await renewSession(), 'forbidden');
+});
+
+test('renewSession returns transient-error on 5xx', async () => {
+  for (const status of [500, 502, 503, 504]) {
+    stubFetch([json(status, {})]);
+    assert.equal(await renewSession(), 'transient-error', String(status));
+  }
+});
+
+test('renewSession returns transient-error on other non-auth failures', async () => {
+  for (const status of [400, 404, 409, 429]) {
+    stubFetch([json(status, {})]);
+    assert.equal(await renewSession(), 'transient-error', String(status));
+  }
+});
+
+test('renewSession returns transient-error on a network failure', async () => {
+  stubFetch([new TypeError('offline')]);
+  assert.equal(await renewSession(), 'transient-error');
+});
+
+test('only a 401 is a conclusive logout', () => {
+  const outcomes: Array<[RenewOutcome, boolean]> = [
+    ['unauthenticated', true],
+    ['forbidden', false],
+    ['transient-error', false],
+    ['renewed', false],
+  ];
+  for (const [outcome, expected] of outcomes) {
+    assert.equal(isConclusiveLogout(outcome), expected, outcome);
+  }
+});
+
+test('REGRESSION: a 403 renewal is never a logout', async () => {
+  stubFetch([json(403, {})]);
+  assert.equal(isConclusiveLogout(await renewSession()), false);
+});
+
+test('REGRESSION: a 500 renewal is never a logout', async () => {
+  stubFetch([json(500, {})]);
+  assert.equal(isConclusiveLogout(await renewSession()), false);
+});
+
+test('REGRESSION: a failed network renewal is never a logout', async () => {
+  stubFetch([new TypeError('Failed to fetch')]);
+  assert.equal(isConclusiveLogout(await renewSession()), false);
 });
