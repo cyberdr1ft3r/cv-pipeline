@@ -4,7 +4,7 @@ from __future__ import annotations
 import copy
 import re
 import unicodedata
-from typing import Any, Callable, Dict, Iterable, List, Sequence
+from typing import Any, Callable, Dict, List, Sequence
 
 
 class ChunkingError(ValueError):
@@ -161,43 +161,45 @@ def _fill_missing_scalars(target: Dict[str, Any], incoming: Dict[str, Any]) -> N
             target[key] = copy.deepcopy(value)
 
 
-def _record_conflicts(
-    left: Dict[str, Any],
-    right: Dict[str, Any],
-    fields: Iterable[str],
-) -> bool:
-    for field in fields:
-        left_key = _comparison_key(left.get(field))
-        right_key = _comparison_key(right.get(field))
-        if left_key and right_key and left_key != right_key:
-            return True
-    return False
-
-
 def _experience_matches(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
-    fields = ("titre_poste", "entreprise", "dates")
-    if _record_conflicts(left, right, fields):
-        return False
+    title_left = _comparison_key(left.get("titre_poste"))
+    title_right = _comparison_key(right.get("titre_poste"))
+    company_left = _comparison_key(left.get("entreprise"))
+    company_right = _comparison_key(right.get("entreprise"))
+    dates_left = _comparison_key(left.get("dates"))
+    dates_right = _comparison_key(right.get("dates"))
 
-    title_left, company_left, dates_left = (
-        _comparison_key(left.get(field)) for field in fields
+    company_and_dates = bool(
+        company_left
+        and company_left == company_right
+        and dates_left
+        and dates_left == dates_right
     )
-    title_right, company_right, dates_right = (
-        _comparison_key(right.get(field)) for field in fields
+    if company_and_dates:
+        return True
+
+    title_and_company = bool(
+        title_left
+        and title_left == title_right
+        and company_left
+        and company_left == company_right
     )
-    return any(
-        (
-            first_left
-            and first_left == first_right
-            and second_left
-            and second_left == second_right
-        )
-        for first_left, first_right, second_left, second_right in (
-            (company_left, company_right, dates_left, dates_right),
-            (title_left, title_right, company_left, company_right),
-            (title_left, title_right, dates_left, dates_right),
-        )
+    contradictory_dates = bool(
+        dates_left and dates_right and dates_left != dates_right
     )
+    if title_and_company and not contradictory_dates:
+        return True
+
+    title_and_dates = bool(
+        title_left
+        and title_left == title_right
+        and dates_left
+        and dates_left == dates_right
+    )
+    contradictory_companies = bool(
+        company_left and company_right and company_left != company_right
+    )
+    return title_and_dates and not contradictory_companies
 
 
 def _project_matches(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
@@ -210,14 +212,19 @@ def _project_matches(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
     context_right = _comparison_key(right.get("client_ou_contexte"))
     period_left = _comparison_key(left.get("periode"))
     period_right = _comparison_key(right.get("periode"))
-    if context_left and context_right and context_left != context_right:
-        return False
-    if period_left and period_right and period_left != period_right:
-        return False
-    return bool(
-        (context_left and context_left == context_right)
-        or (period_left and period_left == period_right)
+    name_and_period = bool(
+        period_left and period_left == period_right
     )
+    if name_and_period:
+        return True
+
+    name_and_context = bool(
+        context_left and context_left == context_right
+    )
+    contradictory_periods = bool(
+        period_left and period_right and period_left != period_right
+    )
+    return name_and_context and not contradictory_periods
 
 
 def _certification_matches(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
@@ -422,7 +429,7 @@ def merge_chunk_results(results: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     return merged
 
 
-_STRONG_EXPERIENCE_MARKERS = (
+_EXPERIENCE_HEADINGS = frozenset({
     "experience professionnelle",
     "experiences professionnelles",
     "parcours professionnel",
@@ -430,19 +437,14 @@ _STRONG_EXPERIENCE_MARKERS = (
     "work experience",
     "employment history",
     "career history",
-)
-_GENERIC_EXPERIENCE_HEADINGS = frozenset({"experience", "experiences"})
+    "experience",
+    "experiences",
+})
 
 
 def _has_experience_section(source_text: str) -> bool:
-    normalized_source = _comparison_key(source_text)
-    if any(
-        re.search(rf"\b{re.escape(marker)}\b", normalized_source)
-        for marker in _STRONG_EXPERIENCE_MARKERS
-    ):
-        return True
     return any(
-        _comparison_key(line) in _GENERIC_EXPERIENCE_HEADINGS
+        _comparison_key(line) in _EXPERIENCE_HEADINGS
         for line in source_text.splitlines()
     )
 
