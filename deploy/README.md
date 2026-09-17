@@ -18,9 +18,15 @@ chmod +x deploy/*.sh
 deploy/deploy.sh 2026.09.16-1
 ```
 
-The deploy script validates the compose model, pulls the exact version, and starts PostgreSQL, API, watcher, frontend, and proxy. It checks the HTTP path and confirms every required container is running, is not restarting, and is healthy when a health check is defined. A failed check restores the previously deployed image version when one is recorded. The script records only version identifiers, never environment values.
+The deploy script validates the compose model, stops any existing watcher container, pulls the exact version, and starts PostgreSQL, API, frontend, and proxy. It checks the HTTP path and confirms every required container is running, is not restarting, and is healthy when a health check is defined. A failed check restores the previously deployed image version with the same watcher mode when one is recorded. The script records only version identifiers and the watcher mode, never environment values.
 
-The staging watcher is required application functionality and starts during every normal production deployment. pgAdmin is the only optional service:
+The staging watcher is intentionally opt-in. Enable it only with the explicit deployment switch:
+
+```sh
+DEPLOY_WATCHER=1 deploy/deploy.sh 2026.09.16-1
+```
+
+This activates the `watcher` Compose profile, includes the watcher in `pull` and `up`, and requires it during service verification. Manual rollback preserves the mode recorded by the current deployment. pgAdmin remains available through its separate profile:
 
 ```sh
 CV_PIPELINE_VERSION=2026.09.16-1 docker compose --env-file deploy/.env.prod -f compose.prod.yml --profile tools up -d pgadmin
