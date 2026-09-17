@@ -23,6 +23,13 @@ def _comparison_key(value: Any) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _stable_string_key(value: Any) -> str:
+    """Case/accent/whitespace key that preserves meaningful punctuation."""
+    text = unicodedata.normalize("NFKD", str(value or "").casefold())
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def _is_useful(value: Any) -> bool:
     if isinstance(value, str):
         return bool(value.strip())
@@ -131,12 +138,16 @@ def chunk_cv_text(
 def _merge_string_lists(target: List[str], incoming: Any) -> None:
     if not isinstance(incoming, list):
         return
-    seen = {_comparison_key(value) for value in target if _comparison_key(value)}
+    seen = {
+        _stable_string_key(value)
+        for value in target
+        if _stable_string_key(value)
+    }
     for value in incoming:
         if not isinstance(value, (str, int, float)):
             continue
         display = str(value).strip()
-        key = _comparison_key(display)
+        key = _stable_string_key(display)
         if display and key and key not in seen:
             target.append(display)
             seen.add(key)
@@ -281,14 +292,19 @@ def _merge_record_list(
             _is_useful(value) for value in record.values()
         ):
             continue
-        existing = next(
-            (candidate for candidate in target if matches(candidate, record)),
-            None,
-        )
-        if existing is None:
+        matching_records = [
+            candidate for candidate in target if matches(candidate, record)
+        ]
+        if len(matching_records) != 1:
+            # Zero matches means a distinct record. Multiple matches means the
+            # fragment is ambiguous; retaining it is safer than choosing one.
             target.append(copy.deepcopy(record))
         else:
-            _merge_record(existing, record, list_fields=list_fields)
+            _merge_record(
+                matching_records[0],
+                record,
+                list_fields=list_fields,
+            )
 
 
 def merge_chunk_results(results: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
@@ -406,7 +422,7 @@ def merge_chunk_results(results: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     return merged
 
 
-_EXPERIENCE_MARKERS = (
+_STRONG_EXPERIENCE_MARKERS = (
     "experience professionnelle",
     "experiences professionnelles",
     "parcours professionnel",
@@ -414,9 +430,31 @@ _EXPERIENCE_MARKERS = (
     "work experience",
     "employment history",
     "career history",
-    "experience",
-    "experiences",
 )
+_GENERIC_EXPERIENCE_HEADINGS = frozenset({"experience", "experiences"})
+
+
+def _has_experience_section(source_text: str) -> bool:
+    normalized_source = _comparison_key(source_text)
+    if any(
+        re.search(rf"\b{re.escape(marker)}\b", normalized_source)
+        for marker in _STRONG_EXPERIENCE_MARKERS
+    ):
+        return True
+    return any(
+        _comparison_key(line) in _GENERIC_EXPERIENCE_HEADINGS
+        for line in source_text.splitlines()
+    )
+
+
+def _has_meaningful_record(records: Any, fields: Sequence[str]) -> bool:
+    if not isinstance(records, list):
+        return False
+    return any(
+        isinstance(record, dict)
+        and any(_is_useful(record.get(field)) for field in fields)
+        for record in records
+    )
 
 
 def validate_extraction_quality(source_text: str, result: Dict[str, Any]) -> None:
@@ -430,12 +468,18 @@ def validate_extraction_quality(source_text: str, result: Dict[str, Any]) -> Non
     if not isinstance(experiences, list):
         experiences = []
 
-    normalized_source = _comparison_key(source_text)
-    has_experience_marker = any(
-        re.search(rf"\b{re.escape(marker)}\b", normalized_source)
-        for marker in _EXPERIENCE_MARKERS
+    has_experiences = _has_meaningful_record(
+        experiences,
+        (
+            "titre_poste",
+            "entreprise",
+            "dates",
+            "missions",
+            "realisations",
+            "environnement_technique",
+        ),
     )
-    if has_experience_marker and not experiences:
+    if _has_experience_section(source_text) and not has_experiences:
         raise ExtractionQualityError(
             "source contains an experience section but no experiences were extracted"
         )
@@ -449,13 +493,24 @@ def validate_extraction_quality(source_text: str, result: Dict[str, Any]) -> Non
         if isinstance(skills.get("methodologies_et_outils"), list):
             tools = skills["methodologies_et_outils"]
 
-    meaningful_collections = (
-        experiences,
-        result.get("formation"),
-        result.get("certifications"),
-        result.get("projets_realises"),
-        technologies,
-        tools,
+    has_meaningful_content = any(
+        (
+            has_experiences,
+            _has_meaningful_record(
+                result.get("formation"),
+                ("institution", "diplome", "dates"),
+            ),
+            _has_meaningful_record(
+                result.get("certifications"),
+                ("nom", "organisme", "date"),
+            ),
+            _has_meaningful_record(
+                result.get("projets_realises"),
+                ("nom", "client_ou_contexte", "periode", "description"),
+            ),
+            bool(technologies),
+            bool(tools),
+        )
     )
-    if not any(isinstance(items, list) and items for items in meaningful_collections):
+    if not has_meaningful_content:
         raise ExtractionQualityError("extraction is structurally empty")

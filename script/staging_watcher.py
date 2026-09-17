@@ -395,18 +395,25 @@ def _truncate_repair_json_text(json_text: str) -> Optional[str]:
     return None
 
 
-def _parse_llm_json(raw: str) -> Dict:
+def _parse_llm_json(
+    raw: str,
+    *,
+    allow_truncated_repair: bool = True,
+) -> Dict:
     cleaned = _clean_json(raw)
     if cleaned:
         try:
             return json.loads(_fix_json(cleaned))
         except json.JSONDecodeError:
-            truncated = _truncate_repair_json_text(_fix_json(cleaned))
-            if truncated:
-                try:
-                    return json.loads(truncated)
-                except json.JSONDecodeError:
-                    pass
+            if allow_truncated_repair:
+                truncated = _truncate_repair_json_text(_fix_json(cleaned))
+                if truncated:
+                    try:
+                        return json.loads(truncated)
+                    except json.JSONDecodeError:
+                        pass
+    if not allow_truncated_repair:
+        raise ValueError("Could not parse strict LLM JSON response")
     repaired = _repair_json(raw)
     if repaired:
         return repaired
@@ -439,7 +446,10 @@ def _extract_chunk_json(
         )
 
     try:
-        parsed = _parse_llm_json(raw_response)
+        parsed = _parse_llm_json(
+            raw_response,
+            allow_truncated_repair=False,
+        )
         if not isinstance(parsed, dict):
             raise ValueError("chunk response is not a JSON object")
         return parsed
@@ -450,8 +460,14 @@ def _extract_chunk_json(
             total_chunks,
         )
 
+    if len(raw_response) > _MAX_CHUNK_REPAIR_CHARS:
+        raise ValueError(
+            f"Could not parse LLM JSON response for chunk "
+            f"{chunk_index}/{total_chunks}; response exceeds bounded repair limit"
+        )
+
     repaired_raw = _call_llm(
-        _CHUNK_REPAIR_PROMPT + raw_response[:_MAX_CHUNK_REPAIR_CHARS],
+        _CHUNK_REPAIR_PROMPT + raw_response,
         use_fallback=False,
         reject_truncated=True,
     )
@@ -462,7 +478,10 @@ def _extract_chunk_json(
         )
 
     try:
-        repaired = _parse_llm_json(repaired_raw)
+        repaired = _parse_llm_json(
+            repaired_raw,
+            allow_truncated_repair=False,
+        )
         if not isinstance(repaired, dict):
             raise ValueError("repaired chunk response is not a JSON object")
         return repaired

@@ -219,6 +219,21 @@ class MergeTests(unittest.TestCase):
 
         self.assertEqual(len(merged["experiences_professionnelles"]), 2)
 
+    def test_ambiguous_repeated_role_fragment_stays_separate(self) -> None:
+        first = _empty_chunk()
+        first["experiences_professionnelles"] = [
+            _experience("Engineer", "Alpha", "2018 - 2019"),
+            _experience("Engineer", "Alpha", "2022 - 2023"),
+        ]
+        second = _empty_chunk()
+        second["experiences_professionnelles"] = [
+            _experience("Engineer", "Alpha", "")
+        ]
+
+        merged = merge_chunk_results([first, second])
+
+        self.assertEqual(len(merged["experiences_professionnelles"]), 3)
+
     def test_projects_merge_only_with_conservative_identity(self) -> None:
         first = _empty_chunk()
         first["projets_realises"] = [
@@ -342,6 +357,17 @@ class MergeTests(unittest.TestCase):
             ["Scrum", "Git", "Kanban"],
         )
 
+    def test_punctuation_significant_skills_remain_distinct(self) -> None:
+        chunk = _empty_chunk()
+        chunk["competences"]["technologies"] = ["C++", "C#", "c++"]
+
+        merged = merge_chunk_results([chunk])
+
+        self.assertEqual(
+            merged["competences"]["technologies"],
+            ["C++", "C#"],
+        )
+
 
 class QualityGateTests(unittest.TestCase):
     def _valid_junior(self) -> dict:
@@ -375,11 +401,27 @@ class QualityGateTests(unittest.TestCase):
             self._valid_junior(),
         )
 
+    def test_user_experience_phrase_is_not_an_employment_heading(self) -> None:
+        validate_extraction_quality(
+            "FORMATION\nMaster en User Experience et design",
+            self._valid_junior(),
+        )
+
     def test_structurally_empty_result_is_rejected(self) -> None:
         result = _empty_chunk()
         result["informations_personnelles"] = {
             "nom_complet": "Candidate SYNTHETIQUE"
         }
+
+        with self.assertRaisesRegex(ExtractionQualityError, "structurally empty"):
+            validate_extraction_quality("Profil personnel", result)
+
+    def test_unknown_record_shell_is_structurally_empty(self) -> None:
+        result = _empty_chunk()
+        result["informations_personnelles"] = {
+            "nom_complet": "Candidate SYNTHETIQUE"
+        }
+        result["experiences_professionnelles"] = [{"unknown": "value"}]
 
         with self.assertRaisesRegex(ExtractionQualityError, "structurally empty"):
             validate_extraction_quality("Profil personnel", result)
@@ -457,8 +499,36 @@ class OrchestrationTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "chunk 2/2"):
                 watcher._extract_cv_json("source")
 
-        self.assertEqual(parse.call_args_list, [call(valid)])
+        self.assertEqual(
+            parse.call_args_list,
+            [call(valid, allow_truncated_repair=False)],
+        )
         merge.assert_not_called()
+
+    def test_non_length_malformed_json_uses_one_strict_repair(self) -> None:
+        malformed = '{"informations_personnelles": {"nom_complet": "Test"}'
+        repaired = '{"informations_personnelles": {"nom_complet": "Test"}}'
+        with patch.object(
+            watcher,
+            "_call_llm",
+            side_effect=[malformed, repaired],
+        ) as call_llm:
+            result = watcher._extract_chunk_json("chunk", 1, 1)
+
+        self.assertEqual(
+            result["informations_personnelles"]["nom_complet"],
+            "Test",
+        )
+        self.assertEqual(call_llm.call_count, 2)
+        self.assertTrue(
+            call_llm.call_args_list[0].kwargs["reject_truncated"]
+        )
+        self.assertFalse(
+            call_llm.call_args_list[1].kwargs["use_fallback"]
+        )
+        self.assertTrue(
+            call_llm.call_args_list[1].kwargs["reject_truncated"]
+        )
 
     def test_merged_experiences_are_enriched_once_after_merge(self) -> None:
         chunk = _empty_chunk()
