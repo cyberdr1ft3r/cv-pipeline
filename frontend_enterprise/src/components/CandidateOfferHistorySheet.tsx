@@ -2,11 +2,26 @@
 
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import { ChevronRight, Loader2, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { scoreTextClass } from '@/lib/scoreUtils';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
+
+/**
+ * Offer links must stay inside the space the user is already in.
+ *
+ * This sheet is rendered from both /recruiter and /sourcer. It used to link
+ * unconditionally to /recruiter/offers/<id>, so a sourcer clicking an offer in
+ * a candidate's history was bounced by the auth middleware to /sourcer,
+ * losing their place for no visible reason. Deriving the prefix from the
+ * current path keeps any future call site correct too.
+ */
+function offerHrefFor(pathname: string | null, offerId: string): string {
+  const space = pathname?.startsWith('/sourcer') ? '/sourcer' : '/recruiter';
+  return `${space}/offers/${offerId}`;
+}
 
 export interface OfferHistoryEntry {
   offer_id: string;
@@ -58,6 +73,7 @@ function HistoryCard({
   isOwned: boolean;
   onClose: () => void;
 }) {
+  const pathname = usePathname();
   const recruiterLabel = isOwned ? 'Moi' : (entry.recruiter_name || '—');
 
   const body = (
@@ -110,7 +126,7 @@ function HistoryCard({
   if (isOwned) {
     return (
       <Link
-        href={`/recruiter/offers/${entry.offer_id}`}
+        href={offerHrefFor(pathname, entry.offer_id)}
         onClick={onClose}
         className={`block ${cardClass} hover:border-teal-500/30 hover:bg-white/[0.06] cursor-pointer`}
       >

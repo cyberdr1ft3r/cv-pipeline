@@ -1,0 +1,4 @@
+{
+  "//": "Scopes ESM to the test directory only. The Next config files at the project root are CommonJS, so \"type\": \"module\" cannot go in the root package.json.",
+  "type": "module"
+}

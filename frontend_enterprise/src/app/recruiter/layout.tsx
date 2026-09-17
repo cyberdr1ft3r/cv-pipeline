@@ -4,6 +4,9 @@ import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import { usePathname } from 'next/navigation';
+
+import ProtectedSessionHeartbeat from '@/components/ProtectedSessionHeartbeat';
+import { apiGet, isSessionExpired, redirectToLogin } from '@/lib/apiClient';
 import { BarChart2, Bell, Briefcase, LayoutDashboard, LogOut, Sparkles, UserCircle, Users } from 'lucide-react';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
@@ -34,10 +37,15 @@ export default function RecruiterLayout({ children }: { children: React.ReactNod
   const [user, setUser] = useState<UserInfo | null>(null);
 
   useEffect(() => {
-    fetch(`${API_BASE}/auth/me`, { credentials: 'include' })
-      .then(r => r.ok ? r.json() : null)
-      .then(data => setUser(data))
-      .catch(() => null);
+    // A 403 or a server hiccup must not clear the header; only a genuinely
+    // dead session (401 after one renewal attempt) sends the user to /login.
+    apiGet<UserInfo>('/auth/me').then(result => {
+      if (result.ok) {
+        setUser(result.data);
+      } else if (isSessionExpired(result)) {
+        redirectToLogin();
+      }
+    });
   }, []);
 
   function isActive(href: string) {
@@ -52,6 +60,7 @@ export default function RecruiterLayout({ children }: { children: React.ReactNod
 
   return (
     <div className="min-h-screen bg-[#f4f7fb] text-slate-950">
+      <ProtectedSessionHeartbeat />
       <aside className="fixed inset-y-0 left-0 z-40 hidden w-80 flex-col border-r border-[#26364b] bg-[#172437] text-white md:flex">
         <div className="flex h-[94px] items-center border-b border-white/10 px-8">
           <Link href="/recruiter">

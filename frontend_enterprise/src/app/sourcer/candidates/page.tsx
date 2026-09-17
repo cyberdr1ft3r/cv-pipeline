@@ -7,8 +7,8 @@ import { FolderUp, Loader2, Search, Users } from 'lucide-react';
 import { DarkSelect } from '@/components/DarkSelect';
 import { CandidateScoreRangeFilter } from '@/components/CandidateScoreRangeFilter';
 import { formatScorePct, scoreTextClass } from '@/lib/scoreUtils';
+import { apiGet, failureMessage, isSessionExpired, redirectToLogin } from '@/lib/apiClient';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
 const PAGE_SIZE = 20;
 
 const SENIORITIES = ['Junior', 'Confirme', 'Senior', 'Expert'];
@@ -51,6 +51,7 @@ export default function SourcerCandidatesPage() {
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [profileFilter, setProfileFilter] = useState('');
   const [seniorityFilter, setSeniorityFilter] = useState('');
@@ -73,23 +74,34 @@ export default function SourcerCandidatesPage() {
       params.set('score_max', String(scoreRange[1]));
     }
 
-    fetch(`${API_BASE}/candidates?${params}`, { credentials: 'include' })
-      .then(r => r.ok ? r.json() : Promise.reject())
-      .then(d => {
-        setCandidates(d.candidates || []);
-        setTotal(d.total || 0);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
+    // A failed load must not masquerade as an empty vivier. 401 means the
+    // session really ended (apiGet already tried one renewal); anything else is
+    // surfaced as an error and leaves the session alone.
+    apiGet<{ candidates?: Candidate[]; total?: number }>(`/candidates?${params}`).then(result => {
+      if (result.ok) {
+        setCandidates(result.data.candidates || []);
+        setTotal(result.data.total || 0);
+        setLoadError(null);
+      } else if (isSessionExpired(result)) {
+        redirectToLogin();
+        return;
+      } else {
+        setCandidates([]);
+        setTotal(0);
+        setLoadError(failureMessage(result));
+      }
+      setLoading(false);
+    });
   }, [offset, search, profileFilter, seniorityFilter, openFilter, scoreRange, scoreFilterActive]);
 
   useEffect(() => { fetchCandidates(); }, [fetchCandidates]);
 
   useEffect(() => {
-    fetch(`${API_BASE}/staging/profiles`, { credentials: 'include' })
-      .then(r => r.ok ? r.json() : null)
-      .then(d => { if (d) setProfiles(d.profiles || []); })
-      .catch(() => null);
+    // Filter options are a nicety: a failure here degrades the filter list but
+    // must never affect the session or the candidate list.
+    apiGet<{ profiles?: string[] }>('/staging/profiles').then(result => {
+      if (result.ok) setProfiles(result.data.profiles || []);
+    });
   }, []);
 
   useEffect(() => { setOffset(0); }, [search, profileFilter, seniorityFilter, openFilter, scoreRange]);
@@ -170,7 +182,20 @@ export default function SourcerCandidatesPage() {
         <div className="flex justify-center h-48"><Loader2 className="h-8 w-8 animate-spin text-[#1f9d94] mt-12" /></div>
       )}
 
-      {!loading && candidates.length === 0 && (
+      {!loading && loadError && (
+        <div className="flex min-h-[220px] flex-col items-center justify-center rounded-xl border border-amber-200 bg-amber-50 px-6 py-10 text-center text-amber-900 shadow-sm">
+          <p className="font-semibold">Impossible de charger le vivier</p>
+          <p className="mt-1 max-w-md text-sm">{loadError}</p>
+          <button
+            onClick={() => { setLoading(true); setLoadError(null); fetchCandidates(); }}
+            className="mt-5 inline-flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-amber-700"
+          >
+            Réessayer
+          </button>
+        </div>
+      )}
+
+      {!loading && !loadError && candidates.length === 0 && (
         <div className="flex min-h-[220px] flex-col items-center justify-center rounded-xl border border-[#d8e0ea] bg-white px-6 py-10 text-center text-slate-500 shadow-sm">
           <span className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-blue-50 text-[#2f66ed]">
             <Users className="h-6 w-6" />
@@ -184,7 +209,7 @@ export default function SourcerCandidatesPage() {
         </div>
       )}
 
-      {!loading && candidates.length > 0 && (
+      {!loading && !loadError && candidates.length > 0 && (
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
           className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {candidates.map((c, i) => (
