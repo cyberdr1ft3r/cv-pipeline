@@ -30,8 +30,8 @@ import {
  *    conclusive 401 from the renewal endpoint ends the session; anything else
  *    leaves it alone and lets a later beat try again.
  *  - It never reads the access token. The cookie is HttpOnly and stays that
- *    way; the expiry it schedules against is the `expires_in` the API returned
- *    on the last successful renewal.
+ *    way; the expiry it schedules against is the `expires_in` the API reports
+ *    on each successful renewal.
  */
 export default function ProtectedSessionHeartbeat({
   lifetimeSeconds = DEFAULT_SESSION_LIFETIME_SECONDS,
@@ -40,6 +40,11 @@ export default function ProtectedSessionHeartbeat({
 }) {
   const stoppedRef = useRef(false);
   const inFlightRef = useRef(false);
+  // The lifetime the API last advertised. Starts at the configured default and
+  // is corrected by the server on the first renewal, so the client schedules
+  // against what the API actually issues rather than a constant that could
+  // drift away from it.
+  const lifetimeRef = useRef(lifetimeSeconds);
   const stateRef = useRef<HeartbeatState>({
     expiresAtSeconds: null,
     // Mounting a protected page is itself an interaction.
@@ -50,6 +55,9 @@ export default function ProtectedSessionHeartbeat({
 
   useEffect(() => {
     let cancelled = false;
+    let timer: number | undefined;
+
+    lifetimeRef.current = lifetimeSeconds;
 
     const now = () => Math.floor(Date.now() / 1000);
 
@@ -63,20 +71,23 @@ export default function ProtectedSessionHeartbeat({
       stateRef.current.documentHidden =
         typeof document !== 'undefined' && document.visibilityState === 'hidden';
 
-      if (planHeartbeat(stateRef.current, now(), lifetimeSeconds) !== 'renew') return;
+      if (planHeartbeat(stateRef.current, now(), lifetimeRef.current) !== 'renew') return;
 
       inFlightRef.current = true;
       stateRef.current.lastRenewAttemptAtSeconds = now();
       try {
-        const outcome = await renewSession();
+        const renewal = await renewSession();
         if (cancelled) return;
 
-        if (outcome === 'renewed') {
-          stateRef.current.expiresAtSeconds = now() + lifetimeSeconds;
+        if (renewal.outcome === 'renewed') {
+          // Trust the server's own lifetime when it gives one.
+          const lifetime = renewal.expiresInSeconds ?? lifetimeRef.current;
+          lifetimeRef.current = lifetime;
+          stateRef.current.expiresAtSeconds = now() + lifetime;
           return;
         }
 
-        if (isConclusiveLogout(outcome)) {
+        if (isConclusiveLogout(renewal)) {
           // The only conclusive answer: the session is over.
           stoppedRef.current = true;
           redirectToLogin();
@@ -89,6 +100,20 @@ export default function ProtectedSessionHeartbeat({
       } finally {
         inFlightRef.current = false;
       }
+    }
+
+    /**
+     * Self-rescheduling rather than a fixed setInterval: the cadence is derived
+     * from the lifetime the server last reported, so if the API issues a
+     * shorter-lived token than the client's default the heartbeat speeds up to
+     * match instead of sleeping through the renewal window.
+     */
+    function scheduleNext() {
+      if (cancelled || stoppedRef.current) return;
+      timer = window.setTimeout(async () => {
+        await beat();
+        scheduleNext();
+      }, heartbeatIntervalMs(lifetimeRef.current));
     }
 
     // Activity listeners only record a timestamp; they never fire a request, so
@@ -112,14 +137,12 @@ export default function ProtectedSessionHeartbeat({
     window.addEventListener('focus', onReturn);
 
     // Renew on mount so a freshly opened or restored tab is re-credentialed and
-    // we learn the expiry to schedule against.
-    void beat();
-
-    const interval = window.setInterval(() => void beat(), heartbeatIntervalMs(lifetimeSeconds));
+    // we learn the real expiry to schedule against.
+    void beat().then(scheduleNext);
 
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
+      if (timer !== undefined) window.clearTimeout(timer);
       for (const event of activityEvents) {
         window.removeEventListener(event, markActive);
       }

@@ -16,9 +16,10 @@ import {
   isConclusiveLogout,
   isForbidden,
   isSessionExpired,
+  isSessionUnverified,
   renewSession,
   type ApiFailure,
-  type RenewOutcome,
+  type RenewResult,
 } from '../src/lib/apiClient.ts';
 
 type Call = { url: string; init: RequestInit };
@@ -116,6 +117,111 @@ test('allowRenew:false never calls the renew endpoint', async () => {
   assert.equal(calls.length, 1);
 });
 
+// ── The five 401-then-renewal flows ──────────────────────────────────────────
+//
+// The bug these pin down: apiRequest renewed on a 401, but when the renewal
+// itself failed transiently it fell through to the ORIGINAL 401 response and
+// returned `unauthenticated`, so callers logged the user out on a server blip.
+// Only two conclusive 401s - the request and the renewal - may end a session.
+
+test('FLOW 1: request 401 + renewal renewed -> retry once and succeed', async () => {
+  const calls = stubFetch([
+    json(401, { detail: 'expired' }),
+    json(200, { expires_in: 1800 }),
+    json(200, { candidates: [], total: 0 }),
+  ]);
+
+  const result = await apiGet('/candidates');
+
+  assert.equal(result.ok, true);
+  assert.equal(calls.length, 3, 'request, renew, retry');
+  assert.match(calls[1].url, /\/auth\/renew$/);
+  assert.match(calls[2].url, /\/candidates$/);
+});
+
+test('FLOW 2: request 401 + renewal 401 -> unauthenticated', async () => {
+  const calls = stubFetch([json(401, { detail: 'expired' }), json(401, { detail: 'gone' })]);
+
+  const result = await apiGet('/candidates');
+
+  assert.ok(isSessionExpired(result), 'two conclusive 401s do end the session');
+  assert.equal(calls.length, 2, 'the request is not retried after a 401 renewal');
+});
+
+test('FLOW 3: REGRESSION request 401 + renewal 403 -> NOT unauthenticated', async () => {
+  const calls = stubFetch([json(401, { detail: 'expired' }), json(403, { detail: 'nope' })]);
+
+  const result = await apiGet('/candidates');
+
+  assert.equal(isSessionExpired(result), false, 'a 403 renewal must never log the user out');
+  assert.ok(isSessionUnverified(result));
+  assert.equal(calls.length, 2, 'the request must not be retried');
+});
+
+test('FLOW 4: REGRESSION request 401 + renewal 5xx -> NOT unauthenticated', async () => {
+  for (const status of [500, 502, 503, 504]) {
+    stubFetch([json(401, { detail: 'expired' }), json(status, {})]);
+
+    const result = await apiGet('/candidates');
+
+    assert.equal(isSessionExpired(result), false, `${status} renewal must not log out`);
+    assert.ok(isSessionUnverified(result), String(status));
+  }
+});
+
+test('FLOW 5: REGRESSION request 401 + renewal network failure -> NOT unauthenticated', async () => {
+  let call = 0;
+  globalThis.fetch = (async () => {
+    call += 1;
+    if (call === 1) return json(401, { detail: 'expired' });
+    throw new TypeError('Failed to fetch');
+  }) as typeof fetch;
+
+  const result = await apiGet('/candidates');
+
+  assert.equal(isSessionExpired(result), false, 'a dropped connection must not log the user out');
+  assert.ok(isSessionUnverified(result));
+});
+
+test('an unverified session is reported as a retryable failure, not a logout', async () => {
+  stubFetch([json(401, {}), json(500, {})]);
+
+  const result = await apiGet('/candidates');
+
+  assert.equal(result.ok, false);
+  assert.equal(result.ok === false && result.kind, 'session-unverified');
+  assert.equal(isSessionExpired(result), false);
+  assert.equal(isForbidden(result), false);
+  assert.ok(failureMessage(result as ApiFailure<unknown>).length > 0);
+});
+
+test('a 401 that survives a successful renewal still ends the session', async () => {
+  // Renewal succeeds, the retry comes back 401 anyway: the API has spoken twice.
+  stubFetch([json(401, {}), json(200, { expires_in: 1800 }), json(401, {})]);
+
+  const result = await apiGet('/candidates');
+
+  assert.ok(isSessionExpired(result));
+});
+
+test('every 401-flow outcome is distinguishable by kind', async () => {
+  const kinds: string[] = [];
+
+  stubFetch([json(401, {}), json(401, {})]);
+  let result = await apiGet('/x');
+  kinds.push(result.ok === false ? result.kind : 'ok');
+
+  stubFetch([json(401, {}), json(503, {})]);
+  result = await apiGet('/x');
+  kinds.push(result.ok === false ? result.kind : 'ok');
+
+  stubFetch([json(401, {}), json(200, { expires_in: 1800 }), json(200, {})]);
+  result = await apiGet('/x');
+  kinds.push(result.ok ? 'ok' : result.kind);
+
+  assert.deepEqual(kinds, ['unauthenticated', 'session-unverified', 'ok']);
+});
+
 // ── 403 is not a logout ──────────────────────────────────────────────────────
 
 test('a 403 is forbidden, never an expired session', async () => {
@@ -192,50 +298,68 @@ test('every failure kind has a distinct user-facing message', async () => {
 // server is having a bad minute", and the heartbeat logged the user out for
 // both.
 
-test('renewSession returns renewed on 200', async () => {
+test('renewSession returns renewed on 200, carrying the server lifetime', async () => {
   stubFetch([json(200, { expires_in: 1800 })]);
-  assert.equal(await renewSession(), 'renewed');
+  assert.deepEqual(await renewSession(), { outcome: 'renewed', expiresInSeconds: 1800 });
+});
+
+test('renewSession reports the API lifetime even when it differs from the default', async () => {
+  stubFetch([json(200, { expires_in: 420 })]);
+  assert.deepEqual(await renewSession(), { outcome: 'renewed', expiresInSeconds: 420 });
+});
+
+test('an unusable expires_in becomes null so the caller falls back', async () => {
+  for (const value of [undefined, null, 0, -1, 'soon', Number.NaN, {}]) {
+    stubFetch([json(200, { expires_in: value })]);
+    const result = await renewSession();
+    assert.deepEqual(result, { outcome: 'renewed', expiresInSeconds: null }, String(value));
+  }
+});
+
+test('a fractional expires_in is floored', async () => {
+  stubFetch([json(200, { expires_in: 1799.9 })]);
+  assert.deepEqual(await renewSession(), { outcome: 'renewed', expiresInSeconds: 1799 });
 });
 
 test('renewSession returns unauthenticated on 401', async () => {
   const calls = stubFetch([json(401, {})]);
-  assert.equal(await renewSession(), 'unauthenticated');
+  assert.deepEqual(await renewSession(), { outcome: 'unauthenticated' });
   assert.equal(calls.length, 1, 'renewal must never try to renew itself');
 });
 
 test('renewSession returns forbidden on 403', async () => {
   stubFetch([json(403, {})]);
-  assert.equal(await renewSession(), 'forbidden');
+  assert.deepEqual(await renewSession(), { outcome: 'forbidden' });
 });
 
 test('renewSession returns transient-error on 5xx', async () => {
   for (const status of [500, 502, 503, 504]) {
     stubFetch([json(status, {})]);
-    assert.equal(await renewSession(), 'transient-error', String(status));
+    assert.deepEqual(await renewSession(), { outcome: 'transient-error' }, String(status));
   }
 });
 
 test('renewSession returns transient-error on other non-auth failures', async () => {
   for (const status of [400, 404, 409, 429]) {
     stubFetch([json(status, {})]);
-    assert.equal(await renewSession(), 'transient-error', String(status));
+    assert.deepEqual(await renewSession(), { outcome: 'transient-error' }, String(status));
   }
 });
 
 test('renewSession returns transient-error on a network failure', async () => {
   stubFetch([new TypeError('offline')]);
-  assert.equal(await renewSession(), 'transient-error');
+  assert.deepEqual(await renewSession(), { outcome: 'transient-error' });
 });
 
 test('only a 401 is a conclusive logout', () => {
-  const outcomes: Array<[RenewOutcome, boolean]> = [
-    ['unauthenticated', true],
-    ['forbidden', false],
-    ['transient-error', false],
-    ['renewed', false],
+  const cases: Array<[RenewResult, boolean]> = [
+    [{ outcome: 'unauthenticated' }, true],
+    [{ outcome: 'forbidden' }, false],
+    [{ outcome: 'transient-error' }, false],
+    [{ outcome: 'renewed', expiresInSeconds: 1800 }, false],
   ];
-  for (const [outcome, expected] of outcomes) {
-    assert.equal(isConclusiveLogout(outcome), expected, outcome);
+  for (const [result, expected] of cases) {
+    assert.equal(isConclusiveLogout(result), expected, result.outcome);
   }
 });
 

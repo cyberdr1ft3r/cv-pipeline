@@ -15,7 +15,7 @@
 import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { isConclusiveLogout, renewSession, type RenewOutcome } from '../src/lib/apiClient.ts';
+import { isConclusiveLogout, renewSession, type RenewResult } from '../src/lib/apiClient.ts';
 import {
   DEFAULT_SESSION_LIFETIME_SECONDS as LIFETIME,
   MIN_RENEW_INTERVAL_SECONDS,
@@ -35,11 +35,11 @@ beforeEach(() => {
 });
 
 /** Make every renewal call return the given HTTP status. */
-function stubRenewStatus(status: number): { count: number } {
+function stubRenewStatus(status: number, expiresIn: number = LIFETIME): { count: number } {
   const counter = { count: 0 };
   globalThis.fetch = (async () => {
     counter.count += 1;
-    return new Response(JSON.stringify({ expires_in: LIFETIME }), { status });
+    return new Response(JSON.stringify({ expires_in: expiresIn }), { status });
   }) as typeof fetch;
   return counter;
 }
@@ -63,6 +63,8 @@ interface SimOptions {
   hiddenAt?: (minute: number) => boolean;
   /** Extra beats fired during a minute, e.g. focus/visibility returns. */
   extraBeatsAt?: (minute: number) => number;
+  /** Lifetime the stubbed API advertises via expires_in. */
+  serverLifetimeSeconds?: number;
 }
 
 interface SimResult {
@@ -71,6 +73,7 @@ interface SimResult {
   loggedOutAtMinute: number | null;
   sessionAliveAtEnd: boolean;
   actions: Record<string, number>;
+  serverLifetime: number;
 }
 
 /**
@@ -88,33 +91,39 @@ async function simulate(options: SimOptions): Promise<SimResult> {
   };
 
   let stopped = false;
+  let serverLifetime = options.serverLifetimeSeconds ?? LIFETIME;
   let renewRequests = 0;
   let loggedOutAtMinute: number | null = null;
   const actions: Record<string, number> = {};
 
   async function beat(now: number) {
     if (stopped) return;
-    const action = planHeartbeat(state, now, LIFETIME);
+    const action = planHeartbeat(state, now, serverLifetime);
     actions[action] = (actions[action] ?? 0) + 1;
     if (action !== 'renew') return;
 
     state.lastRenewAttemptAtSeconds = now;
     renewRequests += 1;
-    const outcome: RenewOutcome = await renewSession();
+    const renewal: RenewResult = await renewSession();
 
-    if (outcome === 'renewed') {
-      state.expiresAtSeconds = now + LIFETIME;
+    if (renewal.outcome === 'renewed') {
+      // Schedule against the API's own lifetime, exactly as the component does.
+      serverLifetime = renewal.expiresInSeconds ?? serverLifetime;
+      state.expiresAtSeconds = now + serverLifetime;
       return;
     }
-    if (isConclusiveLogout(outcome)) {
+    if (isConclusiveLogout(renewal)) {
       stopped = true;
       loggedOutAtMinute = Math.floor((now - START) / 60);
     }
     // Anything else leaves the session untouched for a later beat.
   }
 
-  // Mount beat.
+  // Mount beat, then self-reschedule exactly as the component does: the cadence
+  // is recomputed from the lifetime the server last reported, so a short-lived
+  // token speeds the heartbeat up instead of being slept through.
   await beat(START);
+  let nextBeatAt = START + heartbeatIntervalMs(serverLifetime) / 1000;
 
   for (let minute = 1; minute <= minutes; minute++) {
     const now = START + minute * 60;
@@ -124,8 +133,9 @@ async function simulate(options: SimOptions): Promise<SimResult> {
     for (let extra = 0; extra < extraBeatsAt(minute); extra++) {
       await beat(now);
     }
-    if (minute * 60 % HEARTBEAT_SECONDS === 0) {
+    if (now >= nextBeatAt) {
       await beat(now);
+      nextBeatAt = now + heartbeatIntervalMs(serverLifetime) / 1000;
     }
   }
 
@@ -133,7 +143,14 @@ async function simulate(options: SimOptions): Promise<SimResult> {
   const sessionAliveAtEnd =
     !stopped && state.expiresAtSeconds !== null && state.expiresAtSeconds > endNow;
 
-  return { renewRequests, loggedOut: stopped, loggedOutAtMinute, sessionAliveAtEnd, actions };
+  return {
+    renewRequests,
+    loggedOut: stopped,
+    loggedOutAtMinute,
+    sessionAliveAtEnd,
+    actions,
+    serverLifetime,
+  };
 }
 
 // ── Active users slide ───────────────────────────────────────────────────────
@@ -350,6 +367,66 @@ test('the renewal floor is never breached, whatever the beat pattern', async () 
       `extras=${extras} breached the floor`
     );
   }
+});
+
+// ── The server owns the lifetime ────────────────────────────────────
+
+test('the client adopts the lifetime the API reports, not its own constant', async () => {
+  // The API advertises a much shorter session than the frontend default.
+  stubRenewStatus(200, 600);
+
+  const result = await simulate({ minutes: 120, activeAt: () => true });
+
+  assert.equal(result.serverLifetime, 600, 'the server value must win');
+  assert.equal(result.loggedOut, false);
+});
+
+test('a shorter server lifetime tightens the renewal window', async () => {
+  const short = stubRenewStatus(200, 600);
+  const shortRun = await simulate({ minutes: 120, activeAt: () => true });
+
+  const long = stubRenewStatus(200, 3600);
+  const longRun = await simulate({ minutes: 120, activeAt: () => true });
+
+  assert.ok(
+    shortRun.renewRequests > longRun.renewRequests,
+    `a 600s session should renew more often than a 3600s one ` +
+      `(${shortRun.renewRequests} vs ${longRun.renewRequests})`
+  );
+  assert.ok(short.count > 0 && long.count > 0);
+});
+
+test('a longer server lifetime reduces renewal traffic', async () => {
+  stubRenewStatus(200, 3600);
+
+  const result = await simulate({ minutes: 180, activeAt: () => true });
+
+  assert.equal(result.serverLifetime, 3600);
+  const windows = (180 * 60) / renewThresholdSeconds(3600);
+  assert.ok(
+    result.renewRequests <= windows + 2,
+    `expected about ${windows} renewals, got ${result.renewRequests}`
+  );
+});
+
+test('a renewal without expires_in falls back to the configured lifetime', async () => {
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ user_id: 'u' }), { status: 200 })) as typeof fetch;
+
+  const result = await simulate({ minutes: 120, activeAt: () => true });
+
+  assert.equal(result.serverLifetime, LIFETIME, 'the default must remain in force');
+  assert.equal(result.loggedOut, false);
+  assert.equal(result.sessionAliveAtEnd, true);
+});
+
+test('a session on a short server lifetime still survives while active', async () => {
+  stubRenewStatus(200, 300);
+
+  const result = await simulate({ minutes: 180, activeAt: () => true });
+
+  assert.equal(result.loggedOut, false);
+  assert.equal(result.sessionAliveAtEnd, true, 'a 5-minute token must still slide');
 });
 
 // ── The plan function itself ─────────────────────────────────────────────────
