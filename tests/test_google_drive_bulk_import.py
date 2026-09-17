@@ -374,6 +374,20 @@ class BulkImportContentTests(unittest.TestCase):
 
         self.assertEqual(list(index.values()), [visible.resolve()])
 
+    def test_staging_symlink_is_not_followed_by_content_index(self) -> None:
+        self.staging.mkdir()
+        outside = self.root / "outside.pdf"
+        outside.write_bytes(b"outside")
+        link = self.staging / "linked.pdf"
+        try:
+            link.symlink_to(outside)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlink creation unavailable: {exc}")
+
+        index = build_staging_sha256_index(self.staging)
+
+        self.assertEqual(index, {})
+
     def test_pdf_matching_quarantined_doc_still_lands_in_active_staging(
         self,
     ) -> None:

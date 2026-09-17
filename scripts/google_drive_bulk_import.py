@@ -428,6 +428,9 @@ def _is_safe_index_file(path: Path, root: Path) -> bool:
         return False
     if path.is_symlink() or not path.is_file():
         return False
+    resolved = path.resolve(strict=False)
+    if root not in resolved.parents:
+        return False
     if any(part.startswith(".") for part in relative.parts):
         return False
     if any(
@@ -448,7 +451,7 @@ def build_staging_sha256_index(
     result: dict[str, Path] = {}
     for path in sorted(root.rglob("*")):
         resolved = path.resolve(strict=False)
-        if root not in resolved.parents or not _is_safe_index_file(resolved, root):
+        if not _is_safe_index_file(path, root):
             continue
         result.setdefault(sha256_file(resolved), resolved)
     return result
