@@ -10,6 +10,8 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Iterable
 
+from service import google_oauth
+
 
 DRIVE_API_BASE = "https://www.googleapis.com/drive/v3"
 DRIVE_FILE_RE = re.compile(r"/file/d/([^/]+)")
@@ -185,8 +187,9 @@ def _drive_json(path: str, params: dict[str, str]) -> dict:
     except urllib.error.HTTPError as exc:
         if exc.code in {401, 403}:
             raise GoogleDriveImportError(
-                "Google Drive access denied. Set GOOGLE_DRIVE_ACCESS_TOKEN for private files "
-                "or GOOGLE_DRIVE_API_KEY for public/shared files."
+                "Google Drive access denied. Configure GOOGLE_DRIVE_CLIENT_ID, "
+                "GOOGLE_DRIVE_CLIENT_SECRET and GOOGLE_DRIVE_REFRESH_TOKEN for private "
+                "files and Shared Drives, or GOOGLE_DRIVE_API_KEY for public files."
             ) from exc
         raise GoogleDriveImportError(f"Google Drive API failed with HTTP {exc.code}.") from exc
     except OSError as exc:
@@ -201,11 +204,32 @@ def _api_url(path: str, params: dict[str, str]) -> str:
 
 
 def _headers() -> dict[str, str]:
-    token = (
-        os.getenv("GOOGLE_DRIVE_ACCESS_TOKEN", "").strip()
-        or os.getenv("GOOGLE_DRIVE_BEARER_TOKEN", "").strip()
-    )
     headers = {"Accept": "application/json"}
+    token = _access_token()
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return headers
+
+
+def _access_token() -> str:
+    """Resolve the bearer token for a Drive call.
+
+    A refresh-token credential wins when one is configured, because it survives
+    the one-hour access-token lifetime that kept interrupting bulk imports. The
+    hand-pasted GOOGLE_DRIVE_ACCESS_TOKEN / GOOGLE_DRIVE_BEARER_TOKEN variables
+    stay supported for deployments that have not been migrated yet.
+    """
+    try:
+        token = google_oauth.get_access_token()
+    except google_oauth.GoogleOAuthError as exc:
+        # str(exc) is built from the env var names, the HTTP status and Google's
+        # error code only - it never carries a credential.
+        raise GoogleDriveImportError(str(exc)) from exc
+
+    if token:
+        return token
+
+    return (
+        os.getenv("GOOGLE_DRIVE_ACCESS_TOKEN", "").strip()
+        or os.getenv("GOOGLE_DRIVE_BEARER_TOKEN", "").strip()
+    )

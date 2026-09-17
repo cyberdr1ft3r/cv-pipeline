@@ -34,6 +34,37 @@ The production API accepts proxy headers because it has no published host port a
 
 Keep the inner proxy bound to `127.0.0.1`, expose only the host TLS proxy to the Internet, and configure that host proxy to overwrite the forwarding headers it receives from clients. Do not publish the API container port or expose the inner proxy directly: doing either would let an untrusted client supply headers that the API is configured to trust.
 
+## Google Drive CV import credentials
+
+The Drive importer authenticates with an OAuth refresh token so that long Shared
+Drive inventory and import runs are not cut short by an expiring access token.
+Set three values in `deploy/.env.prod`:
+
+```
+GOOGLE_DRIVE_CLIENT_ID=
+GOOGLE_DRIVE_CLIENT_SECRET=
+GOOGLE_DRIVE_REFRESH_TOKEN=
+```
+
+Mint the refresh token once, outside this repository, against the read-only
+scope `https://www.googleapis.com/auth/drive.readonly` with an account that can
+read the target Shared Drive. The API exchanges it at
+`https://oauth2.googleapis.com/token` on first use and caches the resulting
+access token in memory until two minutes before it expires; nothing is written
+to disk and no credential is ever logged.
+
+`GOOGLE_DRIVE_ACCESS_TOKEN` (or `GOOGLE_DRIVE_BEARER_TOKEN`) and
+`GOOGLE_DRIVE_API_KEY` still work and are read only when all three variables
+above are empty. Setting some but not all three is rejected at request time with
+an error naming the missing variables, rather than silently falling back.
+
+Because `compose.prod.yml` declares these variables, a value placed only in
+`config/.env` is ignored in production: the empty container variable wins over
+`service.config`'s `setdefault`. Put production values in `deploy/.env.prod`.
+
+Rotating the credential takes effect on the next token refresh; restart the API
+container to drop the cached access token immediately.
+
 ## Roll back
 
 ```sh
