@@ -49,8 +49,18 @@ import service.config  # noqa: F401
 from service.cv_storage import LocalCVStorage, normalize_profile, normalize_seniority
 
 try:
+    from script.chunked_extraction import (
+        chunk_cv_text,
+        merge_chunk_results,
+        validate_extraction_quality,
+    )
     from script.experience_years import enrich_annees_experience
 except ImportError:
+    from chunked_extraction import (
+        chunk_cv_text,
+        merge_chunk_results,
+        validate_extraction_quality,
+    )
     from experience_years import enrich_annees_experience
 
 import yaml
@@ -97,12 +107,21 @@ def _load_prompt(key: str) -> str:
     return (_PROJECT_ROOT / "config" / rel).read_text(encoding="utf-8")
 
 
-_EXTRACTION_PROMPT = _load_prompt("extraction")
-_VALIDATION_PROMPT = _load_prompt("validation")
+_CHUNK_EXTRACTION_PROMPT = _load_prompt("extraction_chunk")
 _PROFILE_SYSTEM = _load_prompt("offer_parser_profile_system")
 _PROFILE_USER_TMPL = _load_prompt("offer_parser_profile_user")
 _SENIORITY_SYSTEM = _load_prompt("offer_parser_seniority_system")
 _SENIORITY_USER_TMPL = _load_prompt("offer_parser_seniority_user")
+
+_CHUNK_REPAIR_PROMPT = """Repair the JSON syntax of the object below.
+Return exactly one strict JSON object with the same information.
+Do not add, infer, summarize, or remove CV facts.
+Use empty strings/lists rather than null where syntax repair requires a value.
+No markdown, comments, or surrounding text.
+
+JSON TO REPAIR:
+"""
+_MAX_CHUNK_REPAIR_CHARS = 12000
 
 
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -394,44 +413,109 @@ def _parse_llm_json(raw: str) -> Dict:
     raise ValueError("Could not parse LLM JSON response after cleaning and repair")
 
 
-def _validation_prompt(cv_text: str, broken_json: str) -> str:
-    max_chars = _CONFIG.get("extraction", {}).get("max_prompt_chars", 3000)
-    preview = (broken_json or "")[:2000]
-    safe_cv = cv_text[:max_chars].replace("{", "{{").replace("}", "}}")
-    safe_preview = preview.replace("{", "{{").replace("}", "}}")
-    return _VALIDATION_PROMPT.format(cv_text=safe_cv, json_preview=safe_preview)
+def _chunk_prompt(chunk_text: str, chunk_index: int, total_chunks: int) -> str:
+    return (
+        _CHUNK_EXTRACTION_PROMPT
+        .replace("__CHUNK_INDEX__", str(chunk_index))
+        .replace("__TOTAL_CHUNKS__", str(total_chunks))
+        .replace("__CV_CHUNK__", chunk_text)
+    )
 
 
-def _extract_cv_json(cv_text: str) -> Dict:
-    """LLM extraction with validation repair when JSON parsing fails."""
-    prompt = _EXTRACTION_PROMPT.format(cv_text=cv_text)
-    raw_response = _call_llm(prompt, reject_truncated=True)
-    if not raw_response:
-        raise RuntimeError("LLM extraction returned no response")
-
-    try:
-        return _parse_llm_json(raw_response)
-    except ValueError:
-        logger.warning(
-            "[Processor] Initial JSON parse failed (response=%d chars), requesting validation repair",
-            len(raw_response),
-        )
-
-    validated_raw = _call_llm(
-        _validation_prompt(cv_text, raw_response),
+def _extract_chunk_json(
+    chunk_text: str,
+    chunk_index: int,
+    total_chunks: int,
+) -> Dict:
+    """Extract one required chunk, with at most one compact syntax-repair call."""
+    raw_response = _call_llm(
+        _chunk_prompt(chunk_text, chunk_index, total_chunks),
         reject_truncated=True,
     )
-    if not validated_raw:
-        raise ValueError("Could not parse LLM JSON response after cleaning and repair")
+    if not raw_response:
+        raise RuntimeError(
+            f"LLM extraction returned no response for chunk "
+            f"{chunk_index}/{total_chunks}"
+        )
 
     try:
-        return _parse_llm_json(validated_raw)
-    except ValueError:
+        parsed = _parse_llm_json(raw_response)
+        if not isinstance(parsed, dict):
+            raise ValueError("chunk response is not a JSON object")
+        return parsed
+    except (TypeError, ValueError):
         logger.warning(
-            "[Processor] Validation JSON parse failed (response=%d chars)",
-            len(validated_raw),
+            "[Processor] Chunk %d/%d JSON parse failed; requesting one compact repair",
+            chunk_index,
+            total_chunks,
         )
-        raise ValueError("Could not parse LLM JSON response after cleaning and repair")
+
+    repaired_raw = _call_llm(
+        _CHUNK_REPAIR_PROMPT + raw_response[:_MAX_CHUNK_REPAIR_CHARS],
+        use_fallback=False,
+        reject_truncated=True,
+    )
+    if not repaired_raw:
+        raise ValueError(
+            f"Could not parse LLM JSON response for chunk "
+            f"{chunk_index}/{total_chunks} after bounded repair"
+        )
+
+    try:
+        repaired = _parse_llm_json(repaired_raw)
+        if not isinstance(repaired, dict):
+            raise ValueError("repaired chunk response is not a JSON object")
+        return repaired
+    except (TypeError, ValueError):
+        logger.warning(
+            "[Processor] Chunk %d/%d compact repair failed",
+            chunk_index,
+            total_chunks,
+        )
+        raise ValueError(
+            f"Could not parse LLM JSON response for chunk "
+            f"{chunk_index}/{total_chunks} after bounded repair"
+        )
+
+
+def _extract_cv_json(cv_text: str, filename: str = "") -> Dict:
+    """Sequentially extract every chunk, then merge only after all succeed."""
+    extraction_config = _CONFIG.get("extraction", {})
+    chunks = chunk_cv_text(
+        cv_text,
+        chunk_chars=int(extraction_config.get("chunk_chars", 4500)),
+        overlap_chars=int(
+            extraction_config.get("chunk_overlap_chars", 450)
+        ),
+        max_chunks=int(extraction_config.get("max_chunks", 32)),
+    )
+    if not chunks:
+        raise ValueError("CV text produced no extraction chunks")
+
+    logger.info(
+        "[Processor] Split %s into %d sequential chunks",
+        filename or "CV",
+        len(chunks),
+    )
+    chunk_results: List[Dict] = []
+    for chunk_index, chunk in enumerate(chunks, start=1):
+        logger.info(
+            "[Processor] Extracting %s chunk %d/%d",
+            filename or "CV",
+            chunk_index,
+            len(chunks),
+        )
+        chunk_results.append(
+            _extract_chunk_json(chunk, chunk_index, len(chunks))
+        )
+
+    merged = merge_chunk_results(chunk_results)
+    logger.info(
+        "[Processor] Completed all %d chunks for %s",
+        len(chunks),
+        filename or "CV",
+    )
+    return merged
 
 
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -480,8 +564,11 @@ def _call_llm(
                 return choice.message.content
             except Exception as exc:
                 logger.warning(
-                    "[LLM] Attempt %d/%d with %s failed: %s",
-                    attempt + 1, retries, model, exc,
+                    "[LLM] Attempt %d/%d with %s failed (%s)",
+                    attempt + 1,
+                    retries,
+                    model,
+                    type(exc).__name__,
                 )
                 time.sleep(wait * (attempt + 1))
         if model_idx < len(models) - 1:
@@ -505,16 +592,30 @@ def _validate_json(data: Dict) -> Dict:
 
     # Ensure required top-level keys with safe defaults
     ip = data.setdefault("informations_personnelles", {})
-    ip.setdefault("nom_complet", "")
-    ip.setdefault("titre", "")
+    for field in (
+        "nom_complet",
+        "titre",
+        "email",
+        "telephone",
+        "adresse",
+        "linkedin",
+        "github",
+        "portfolio",
+    ):
+        ip.setdefault(field, "")
 
     data.setdefault("experiences_professionnelles", [])
-    data.setdefault("competences", {"methodologies_et_outils": [], "technologies": []})
+    competences = data.setdefault("competences", {})
+    competences.setdefault("methodologies_et_outils", [])
+    competences.setdefault("technologies", [])
     data.setdefault("formation", [])
     data.setdefault("certifications", [])
     data.setdefault("projets_realises", [])
     data.setdefault("langues", [])
-    data.setdefault("profil_resume", {"description": "", "annees_experience": "", "specialisations": []})
+    profil = data.setdefault("profil_resume", {})
+    profil.setdefault("description", "")
+    profil["annees_experience"] = ""
+    profil.setdefault("specialisations", [])
 
     enrich_annees_experience(data)
     return data
@@ -742,7 +843,7 @@ def _resolve_profile(
     response = _call_llm(prompt, system_prompt=_PROFILE_SYSTEM, use_fallback=False)
 
     if not response or not response.strip():
-        raise ClassificationError(f"LLM returned no profile for title: {title!r}")
+        raise ClassificationError("LLM returned no profile classification")
 
     raw = response.strip()
 
@@ -755,7 +856,7 @@ def _resolve_profile(
     # LLM suggested a new profile â€” normalize to naming convention
     normalized = _normalize_profile_name(raw)
     if not normalized:
-        raise ClassificationError(f"LLM returned unrecognizable profile name {raw!r} for title: {title!r}")
+        raise ClassificationError("LLM returned an unrecognizable profile classification")
 
     # Register in pending_profiles so concurrent workers reuse the same name
     norm_key = normalized.lower()
@@ -764,7 +865,7 @@ def _resolve_profile(
             return pending_profiles[norm_key]
         pending_profiles[norm_key] = normalized
 
-    logger.info("[Classify] New profile %r will be created for title=%r", normalized, title)
+    logger.info("[Classify] New normalized profile category will be created")
     return normalized
 
 
@@ -787,12 +888,6 @@ def _resolve_seniority(extracted: Dict, hint: Optional[str]) -> str:
     profil = extracted.get("profil_resume", {})
     annees = profil.get("annees_experience", "")
 
-    # Diagnostic: log what signals are available (helps trace LLM normalization issues)
-    logger.debug(
-        "[Classify] seniority signals â€” titre=%r annees_experience=%r hint=%r",
-        title, annees, hint,
-    )
-
     # Step 0: internship override â€” if every experience is Stage/PFE/Alternance/
     # Apprentissage/Contrat Pro, this is a fresh graduate regardless of what the
     # titre or annees_experience says. Return Junior unconditionally.
@@ -812,7 +907,7 @@ def _resolve_seniority(extracted: Dict, hint: Optional[str]) -> str:
             spec_text = " ".join(str(s) for s in specialisations)
             matched = _keyword_match_seniority(spec_text)
             if matched:
-                logger.info("[Classify] Seniority from specialisations=%r â†’ %s", spec_text, matched)
+                logger.info("[Classify] Seniority resolved from specialization markers")
                 text_level = matched
 
     # Step 3: LLM fallback when titre/spec keywords miss
@@ -831,11 +926,10 @@ def _resolve_seniority(extracted: Dict, hint: Optional[str]) -> str:
         text_or_hint = _higher_seniority(text_level, hint)
         if text_or_hint and text_or_hint != years_level:
             logger.info(
-                "[Classify] Seniority from annees_experience=%r overrides %s â†’ %s",
-                annees, text_or_hint, years_level,
+                "[Classify] Deterministic experience years override other seniority signals"
             )
         else:
-            logger.info("[Classify] Seniority from annees_experience=%r â†’ %s", annees, years_level)
+            logger.info("[Classify] Seniority resolved from deterministic experience years")
         return years_level
 
     # No years signal â€” fall back to text keyword, path hint, or LLM text_level.
@@ -843,7 +937,7 @@ def _resolve_seniority(extracted: Dict, hint: Optional[str]) -> str:
     if baseline:
         return baseline
 
-    raise ClassificationError(f"seniority uncertain for title: {title!r}")
+    raise ClassificationError("seniority classification is uncertain")
 
 
 def _classify(
@@ -935,14 +1029,23 @@ class CVProcessor:
             if not cv_text or len(cv_text.strip()) < 100:
                 raise ValueError("Extracted text is too short or empty")
 
-            logger.info("[Processor] Extracted %d chars from %s", len(cv_text), staged.filename)
-            extracted = _extract_cv_json(cv_text)
-            extracted = _validate_json(extracted)
-
             logger.info(
-                "[Processor] Extraction signals -- titre=%r annees_experience=%r",
-                extracted.get("informations_personnelles", {}).get("titre", ""),
-                extracted.get("profil_resume", {}).get("annees_experience", ""),
+                "[Processor] Extracted %d chars from %s",
+                len(cv_text),
+                staged.filename,
+            )
+            extracted = _extract_cv_json(cv_text, staged.filename)
+            extracted = _validate_json(extracted)
+            validate_extraction_quality(cv_text, extracted)
+            logger.info(
+                "[Processor] Extraction complete for %s: experiences=%d projects=%d "
+                "formations=%d certifications=%d languages=%d",
+                staged.filename,
+                len(extracted.get("experiences_professionnelles", [])),
+                len(extracted.get("projets_realises", [])),
+                len(extracted.get("formation", [])),
+                len(extracted.get("certifications", [])),
+                len(extracted.get("langues", [])),
             )
 
             try:
@@ -965,7 +1068,6 @@ class CVProcessor:
             logger.info("[Processor] Classified %s -> profile=%s seniority=%s", staged.filename, profile, seniority)
 
             stem = local_file.stem
-            enrich_annees_experience(extracted)
             annees_written = extracted.get("profil_resume", {}).get("annees_experience", "")
 
             _cleanup_stale_cv_locations(self._storage, profile, seniority, stem, staged.filename)
@@ -984,8 +1086,11 @@ class CVProcessor:
                     seniority=seniority,
                     extracted_json=extracted,
                 )
-                full_name = extracted.get("informations_personnelles", {}).get("nom_complet", staged.filename)
-                logger.info("[Processor] Candidat %s enregistre en base (id=%s)", full_name, candidate_id)
+                logger.info(
+                    "[Processor] Candidate from %s stored in database (id=%s)",
+                    staged.filename,
+                    candidate_id,
+                )
             except Exception as db_exc:
                 logger.warning("[Processor] Enregistrement candidat en base echoue pour %s: %s", staged.filename, db_exc)
 
