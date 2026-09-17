@@ -159,7 +159,7 @@ class LlmTruncationSafetyTests(unittest.TestCase):
         self.assertNotIn(response_secret, output)
         self.assertNotIn(token_secret, output)
 
-    def test_truncated_primary_never_reaches_parser_or_normalizer(self) -> None:
+    def test_truncated_primary_never_reaches_parser(self) -> None:
         response = _llm_response(
             '{"experiences_professionnelles": [], "projets_realises": [',
             "length",
@@ -168,15 +168,74 @@ class LlmTruncationSafetyTests(unittest.TestCase):
             watcher._llm_client.chat.completions,
             "create",
             return_value=response,
-        ), patch.object(watcher, "_parse_llm_json") as parse_json, patch.object(
-            watcher, "_validate_json"
-        ) as validate_json:
+        ), patch.object(watcher, "_parse_llm_json") as parse_json:
             with self.assertRaisesRegex(RuntimeError, "no response"):
-                extracted = watcher._extract_cv_json("CV text " * 30)
-                validate_json(extracted)
+                watcher._extract_cv_json("CV text " * 30)
 
         parse_json.assert_not_called()
-        validate_json.assert_not_called()
+
+    def test_processor_cannot_normalize_or_store_truncated_extraction(self) -> None:
+        response = _llm_response(
+            '{"experiences_professionnelles": [], "projets_realises": [',
+            "length",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            staging = root / "staging"
+            source = staging / "truncated.docx"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"synthetic-docx")
+            storage = LocalCVStorage(
+                storage_root=root,
+                library_root=root / "CV_Theque",
+                staging_path=staging,
+            )
+            staged = watcher.StagedFile(
+                str(source),
+                source.name,
+                None,
+                None,
+            )
+
+            with patch.object(
+                watcher,
+                "WATCHER_STAGING_PATH",
+                str(staging),
+            ), patch.object(
+                watcher,
+                "_extract_text_docx",
+                return_value="candidate CV text " * 20,
+            ), patch.object(
+                watcher._llm_client.chat.completions,
+                "create",
+                return_value=response,
+            ), patch.object(
+                watcher,
+                "_parse_llm_json",
+            ) as parse_json, patch.object(
+                watcher,
+                "_validate_json",
+            ) as validate_json, patch.object(
+                storage,
+                "store_extracted",
+                wraps=storage.store_extracted,
+            ) as store_extracted, patch.object(
+                storage,
+                "store_original",
+                wraps=storage.store_original,
+            ) as store_original:
+                watcher.CVProcessor(storage).process(
+                    staged,
+                    known_profiles=frozenset(),
+                    pending_profiles={},
+                    pending_lock=threading.Lock(),
+                )
+
+            self.assertTrue((staging / "failed" / source.name).exists())
+            parse_json.assert_not_called()
+            validate_json.assert_not_called()
+            store_extracted.assert_not_called()
+            store_original.assert_not_called()
 
     def test_truncated_validation_response_is_not_parsed(self) -> None:
         responses = [
