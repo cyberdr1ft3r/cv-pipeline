@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import inspect
 import tempfile
 import sys
 import types
@@ -9,7 +11,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from fastapi import params
 from fastapi.testclient import TestClient
+from starlette._utils import is_async_callable
 
 cv_alignment_stub = types.ModuleType("service.cv_alignment")
 cv_alignment_stub.align_cv_to_offer = lambda *args, **kwargs: None
@@ -21,6 +25,7 @@ cv_alignment_stub.write_alignment_status = lambda *args, **kwargs: None
 sys.modules.setdefault("service.cv_alignment", cv_alignment_stub)
 
 import service.api as api
+from service import google_drive_import
 from service.google_drive_import import DriveFile
 from service.models import PipelineArtifacts, PipelineJob
 from service.security import TokenPayload
@@ -290,6 +295,86 @@ class AuthCookieSecurityTests(unittest.TestCase):
         with patch.dict("os.environ", {"COOKIE_SECURE": "sometimes"}):
             with self.assertRaises(RuntimeError):
                 api._read_bool_env("COOKIE_SECURE", default=False)
+
+
+class DriveImportThreadpoolTests(unittest.TestCase):
+    """The Drive import must not run blocking I/O on the event loop.
+
+    service.google_drive_import uses blocking urllib for every metadata call,
+    folder listing and file download. Declared `async def`, the endpoint ran all
+    of that directly on the event loop, so one Drive import (~53s in production)
+    stalled every other request the API was serving. As a sync endpoint, FastAPI
+    dispatches it to the worker threadpool instead.
+    """
+
+    ROUTE = "/api/v1/staging/google-drive/import"
+
+    def _route(self):
+        for route in api.app.routes:
+            if getattr(route, "path", None) == self.ROUTE:
+                return route
+        raise AssertionError(f"route not registered: {self.ROUTE}")
+
+    def test_drive_import_handler_is_not_a_coroutine_function(self) -> None:
+        self.assertFalse(
+            asyncio.iscoroutinefunction(api.import_google_drive_cvs),
+            "import_google_drive_cvs must stay a sync def so FastAPI runs it in "
+            "the threadpool; the Drive importer underneath uses blocking urllib",
+        )
+
+    def test_registered_endpoint_is_also_sync(self) -> None:
+        # Guards against the decorator being pointed at a different callable.
+        endpoint = self._route().endpoint
+        self.assertFalse(asyncio.iscoroutinefunction(endpoint))
+        self.assertIs(endpoint, api.import_google_drive_cvs)
+
+    def test_fastapi_dispatches_the_route_to_the_threadpool(self) -> None:
+        # FastAPI wraps sync endpoints with run_in_threadpool; this asserts the
+        # behaviour rather than the declaration.
+        self.assertFalse(is_async_callable(self._route().endpoint))
+
+    def test_route_contract_is_unchanged(self) -> None:
+        route = self._route()
+        self.assertEqual(sorted(route.methods), ["POST"])
+        self.assertIs(route.endpoint, api.import_google_drive_cvs)
+
+    def test_endpoint_still_requires_authentication(self) -> None:
+        # Making the handler sync must not have altered its RBAC.
+        signature = inspect.signature(api.import_google_drive_cvs)
+        default = signature.parameters["current_user"].default
+        self.assertIsInstance(default, params.Depends)
+        self.assertIs(default.dependency, api.get_current_user)
+
+    def test_unauthenticated_callers_are_still_rejected(self) -> None:
+        response = TestClient(api.app).post(self.ROUTE, json={"file_urls": []})
+        self.assertEqual(response.status_code, 401)
+
+    def test_handler_body_contains_no_await(self) -> None:
+        # A sync def containing `await` would not compile, but a future edit
+        # could reintroduce `async def` to add one. Fail loudly if the blocking
+        # importer is ever put back on the event loop.
+        source = (Path(__file__).resolve().parents[1] / "service" / "api.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("\ndef import_google_drive_cvs(", source)
+        self.assertNotIn("\nasync def import_google_drive_cvs(", source)
+
+    def test_the_drive_importer_is_still_synchronous(self) -> None:
+        # The reason the endpoint must be sync in the first place.
+        for name in ("list_folder_files", "get_file_metadata", "download_file"):
+            with self.subTest(function=name):
+                self.assertFalse(
+                    asyncio.iscoroutinefunction(getattr(google_drive_import, name)),
+                    f"{name} is sync; if that changes, revisit the endpoint",
+                )
+
+    def test_interactive_import_limits_are_unchanged(self) -> None:
+        # The 50/100 caps belong to the resumable-importer work, not this fix.
+        self.assertEqual(api._GoogleDriveImportRequest().max_files, 50)
+        source = (Path(__file__).resolve().parents[1] / "service" / "api.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("max_files = max(1, min(int(body.max_files or 50), 100))", source)
 
 
 if __name__ == "__main__":
