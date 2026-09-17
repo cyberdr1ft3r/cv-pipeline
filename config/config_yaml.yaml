@@ -81,6 +81,7 @@ paths:
 # Prompt files (relative to config directory)
 prompts:
   extraction: "prompts/extraction_prompt.txt"
+  extraction_chunk: "prompts/extraction_chunk_prompt.txt"
   validation: "prompts/validation_prompt.txt"
   spelling: "prompts/spelling_prompt.txt"
   final_result: "prompts/final_result_prompt.txt"
@@ -115,6 +116,10 @@ extraction:
   mode: "agentic"
   # Max characters sent to LLM in prompt truncation
   max_prompt_chars: 3000
+  # Sequential watcher extraction chunks (including overlap).
+  chunk_chars: 4500
+  chunk_overlap_chars: 450
+  max_chunks: 32
   # DPI for PDF-to-image conversion during OCR
   ocr_dpi: 300
 

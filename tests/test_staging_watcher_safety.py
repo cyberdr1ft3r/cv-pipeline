@@ -254,7 +254,10 @@ class LlmTruncationSafetyTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Could not parse"):
                 watcher._extract_cv_json("CV text " * 30)
 
-        parse_json.assert_called_once_with("not valid JSON")
+        parse_json.assert_called_once_with(
+            "not valid JSON",
+            allow_truncated_repair=False,
+        )
 
     def test_classification_keeps_default_non_rejecting_behavior(self) -> None:
         response = _llm_response("Security Engineer", "length")
