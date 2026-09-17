@@ -116,7 +116,7 @@ class BulkImportState:
     """Durable SQLite state with explicit commits at per-file transitions."""
 
     def __init__(self, path: Path | str) -> None:
-        self.path = Path(path)
+        self.path = Path(path).resolve(strict=False)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(self.path)
         self.connection.row_factory = sqlite3.Row
@@ -247,7 +247,10 @@ class BulkImportState:
         return bool(
             record
             and record.status not in TERMINAL_STATUSES
-            and record.attempts < max_attempts
+            and (
+                record.status == "pending"
+                or record.attempts < max_attempts
+            )
         )
 
     def begin_attempt(self, drive_file_id: str) -> ImportRecord:
@@ -276,6 +279,23 @@ class BulkImportState:
                 WHERE drive_file_id = ?
                 """,
                 (sha256, _utc_now(), drive_file_id),
+            )
+
+    def record_interrupted(self, drive_file_id: str) -> None:
+        """Keep interrupted work resumable without consuming a failed attempt."""
+        with self.connection:
+            self.connection.execute(
+                """
+                UPDATE drive_files
+                SET status = 'pending',
+                    attempts = CASE
+                        WHEN attempts > 0 THEN attempts - 1
+                        ELSE 0
+                    END,
+                    updated_at = ?
+                WHERE drive_file_id = ?
+                """,
+                (_utc_now(), drive_file_id),
             )
 
     def complete(
@@ -332,18 +352,13 @@ class BulkImportState:
     def summary(self, current_ids: Sequence[str]) -> MigrationSummary:
         counts = {status: 0 for status in ALL_STATUSES}
         if current_ids:
-            placeholders = ",".join("?" for _ in current_ids)
+            current_id_set = set(current_ids)
             rows = self.connection.execute(
-                f"""
-                SELECT status, COUNT(*) AS count
-                FROM drive_files
-                WHERE drive_file_id IN ({placeholders})
-                GROUP BY status
-                """,
-                tuple(current_ids),
+                "SELECT drive_file_id, status FROM drive_files"
             ).fetchall()
             for row in rows:
-                counts[row["status"]] = int(row["count"])
+                if row["drive_file_id"] in current_id_set:
+                    counts[row["status"]] += 1
         completed = sum(counts[status] for status in TERMINAL_STATUSES)
         return MigrationSummary(
             completed=completed,
@@ -364,7 +379,7 @@ class ImporterLock:
     """Non-blocking process lock adjacent to the durable state database."""
 
     def __init__(self, state_path: Path | str) -> None:
-        state = Path(state_path)
+        state = Path(state_path).resolve(strict=False)
         self.path = Path(f"{state}.lock")
         self._handle = None
 
@@ -443,9 +458,7 @@ def build_quarantine_sha256_index(
     staging_root: Path | str,
 ) -> dict[str, Path]:
     """Build a recovery index for previously published legacy DOC files."""
-    quarantine = (
-        Path(staging_root) / "failed" / "legacy-doc"
-    ).resolve(strict=False)
+    quarantine = resolve_quarantine_root(staging_root)
     if not quarantine.exists():
         return {}
     result: dict[str, Path] = {}
@@ -458,6 +471,22 @@ def build_quarantine_sha256_index(
         ):
             result.setdefault(sha256_file(path), path.resolve(strict=False))
     return result
+
+
+def resolve_quarantine_root(staging_root: Path | str) -> Path:
+    """Resolve legacy quarantine while rejecting symlink escapes."""
+    staging = Path(staging_root).resolve(strict=False)
+    failed = staging / "failed"
+    quarantine = failed / "legacy-doc"
+    for component in (failed, quarantine):
+        if component.is_symlink():
+            raise StoragePathError(
+                "Legacy DOC quarantine must not be a symlink"
+            )
+    resolved = quarantine.resolve(strict=False)
+    if staging not in resolved.parents:
+        raise StoragePathError("Legacy DOC quarantine escapes staging")
+    return resolved
 
 
 def safe_drive_filename(drive_file: DriveFile) -> str:
@@ -521,7 +550,7 @@ class GoogleDriveBulkImporter:
 
     @property
     def quarantine_root(self) -> Path:
-        return self.staging_root / "failed" / "legacy-doc"
+        return resolve_quarantine_root(self.staging_root)
 
     def _status_for_path(self, drive_file: DriveFile, path: Path) -> str:
         if (
@@ -548,7 +577,6 @@ class GoogleDriveBulkImporter:
         self.staging_root.mkdir(parents=True, exist_ok=True)
         active_index = build_staging_sha256_index(self.staging_root)
         quarantine_index = build_quarantine_sha256_index(self.staging_root)
-        known_content = {**quarantine_index, **active_index}
         processed = 0
 
         for drive_file in files:
@@ -573,8 +601,13 @@ class GoogleDriveBulkImporter:
 
                 # Reconcile a prior publication whose final status commit was
                 # interrupted. No redownload or duplicate publication is needed.
-                if record.sha256 and record.sha256 in known_content:
-                    existing = known_content[record.sha256]
+                content_index = (
+                    quarantine_index
+                    if drive_file.mime_type == DOC_MIME
+                    else active_index
+                )
+                if record.sha256 and record.sha256 in content_index:
+                    existing = content_index[record.sha256]
                     self.state.complete(
                         drive_file.file_id,
                         status=self._status_for_path(drive_file, existing),
@@ -594,7 +627,7 @@ class GoogleDriveBulkImporter:
                 digest = sha256_bytes(content)
                 self.state.record_sha256(drive_file.file_id, digest)
 
-                existing = known_content.get(digest)
+                existing = content_index.get(digest)
                 if existing is not None:
                     self.state.complete(
                         drive_file.file_id,
@@ -616,7 +649,7 @@ class GoogleDriveBulkImporter:
                     max_bytes=self.max_bytes,
                     unique=True,
                 )
-                known_content[digest] = published
+                content_index[digest] = published
                 if self.after_publish:
                     self.after_publish(drive_file, published)
                 status = (
@@ -631,6 +664,7 @@ class GoogleDriveBulkImporter:
                     local_path=published,
                 )
             except (KeyboardInterrupt, SystemExit):
+                self.state.record_interrupted(drive_file.file_id)
                 raise
             except Exception as exc:
                 error_class, summary = _safe_error(exc)
@@ -725,6 +759,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("--max-files must be positive")
     if args.max_attempts < 1:
         raise SystemExit("--max-attempts must be positive")
+    if args.resume and not args.state_file.resolve(strict=False).exists():
+        print(
+            f"bulk import unavailable: resume state not found at {args.state_file}",
+            file=sys.stderr,
+        )
+        return 2
 
     try:
         with ImporterLock(args.state_file), BulkImportState(
@@ -743,7 +783,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 max_attempts=args.max_attempts,
             )
             _print_final(summary)
-            if args.max_files is None and summary.failed:
+            if args.max_files is None and summary.remaining:
                 return 1
             return 0
     except ImporterAlreadyRunningError as exc:

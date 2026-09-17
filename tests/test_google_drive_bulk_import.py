@@ -16,9 +16,10 @@ from scripts.google_drive_bulk_import import (
     ImporterAlreadyRunningError,
     ImporterLock,
     build_staging_sha256_index,
+    main,
     safe_drive_filename,
 )
-from service.cv_storage import LocalCVStorage
+from service.cv_storage import LocalCVStorage, StoragePathError
 from service.google_drive_import import (
     DriveFile,
     GoogleDriveImportError,
@@ -263,6 +264,15 @@ class BulkImportStateTests(unittest.TestCase):
                 with ImporterLock(self.path):
                     pass
 
+    def test_summary_supports_full_drive_inventory_size(self) -> None:
+        files = [_drive_file(str(index)) for index in range(4012)]
+        with BulkImportState(self.path) as state:
+            state.upsert_inventory(files)
+
+            summary = state.summary([item.file_id for item in files])
+
+        self.assertEqual(summary.remaining, 4012)
+
 
 class BulkImportContentTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -363,6 +373,23 @@ class BulkImportContentTests(unittest.TestCase):
         index = build_staging_sha256_index(self.staging)
 
         self.assertEqual(list(index.values()), [visible.resolve()])
+
+    def test_pdf_matching_quarantined_doc_still_lands_in_active_staging(
+        self,
+    ) -> None:
+        quarantine = self.staging / "failed" / "legacy-doc"
+        quarantine.mkdir(parents=True)
+        (quarantine / "old.doc").write_bytes(b"same-content")
+        drive_file = _drive_file("pdf", name="candidate.pdf")
+
+        summary, records = self._run(
+            [drive_file],
+            lambda *_args, **_kwargs: b"same-content",
+        )
+
+        self.assertEqual(summary.imported, 1)
+        self.assertEqual(records["pdf"].status, "imported")
+        self.assertTrue((self.staging / "candidate.pdf").exists())
 
 
 class LegacyDocAndFailureTests(unittest.TestCase):
@@ -495,6 +522,73 @@ class LegacyDocAndFailureTests(unittest.TestCase):
         self.assertEqual(record.status, "already_present")
         self.assertEqual(len(list(self.staging.glob("*.pdf"))), 1)
 
+    def test_interruption_on_final_attempt_remains_resumable(self) -> None:
+        drive_file = _drive_file("one")
+        with BulkImportState(self.state_path) as state:
+            state.upsert_inventory([drive_file])
+            for _ in range(2):
+                state.begin_attempt("one")
+                state.fail(
+                    "one",
+                    error_class="NetworkError",
+                    error_summary="safe failure",
+                )
+
+            importer = GoogleDriveBulkImporter(
+                state=state,
+                staging_root=self.staging,
+                downloader=lambda *_args, **_kwargs: b"content",
+                after_publish=lambda *_args: (_ for _ in ()).throw(
+                    KeyboardInterrupt
+                ),
+            )
+            with self.assertRaises(KeyboardInterrupt):
+                importer.run([drive_file], max_attempts=3)
+            interrupted = state.get("one")
+            self.assertEqual(interrupted.status, "pending")
+            self.assertEqual(interrupted.attempts, 2)
+
+            downloader = MagicMock(side_effect=AssertionError("redownloaded"))
+            resumed = GoogleDriveBulkImporter(
+                state=state,
+                staging_root=self.staging,
+                downloader=downloader,
+            ).run([drive_file], max_attempts=3)
+
+        downloader.assert_not_called()
+        self.assertEqual(resumed.already_present, 1)
+
+    def test_quarantine_symlink_cannot_escape_staging(self) -> None:
+        outside = self.root / "outside"
+        outside.mkdir()
+        self.staging.mkdir()
+        try:
+            (self.staging / "failed").symlink_to(
+                outside,
+                target_is_directory=True,
+            )
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlink creation unavailable: {exc}")
+        drive_file = _drive_file(
+            "legacy",
+            name="legacy.doc",
+            mime_type=DOC_MIME,
+        )
+        with BulkImportState(self.state_path) as state:
+            state.upsert_inventory([drive_file])
+            importer = GoogleDriveBulkImporter(
+                state=state,
+                staging_root=self.staging,
+                downloader=lambda *_args, **_kwargs: b"legacy",
+            )
+            with self.assertRaisesRegex(
+                StoragePathError,
+                "must not be a symlink",
+            ):
+                importer.run([drive_file])
+
+        self.assertEqual(list(outside.iterdir()), [])
+
 
 class PilotResumeTests(unittest.TestCase):
     def test_max_files_limits_pilot_and_resume_continues(self) -> None:
@@ -520,6 +614,15 @@ class PilotResumeTests(unittest.TestCase):
             self.assertEqual(resumed.processed_this_run, 5)
             self.assertEqual(resumed.imported, 15)
             self.assertEqual(downloader.call_count, 15)
+
+    def test_resume_requires_existing_state_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "missing.sqlite3"
+
+            result = main(["--resume", "--state-file", str(missing)])
+
+        self.assertEqual(result, 2)
+        self.assertFalse(missing.exists())
 
 
 if __name__ == "__main__":
