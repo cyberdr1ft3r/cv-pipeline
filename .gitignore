@@ -15,6 +15,10 @@ credentials/
 *_key.txt
 *_token.txt
 *_secret.txt
+# Google service-account keys must never be committed.
+*service-account*.json
+*service_account*.json
+!deploy/service-account.placeholder.json
 
 # Configuration overrides with sensitive data
 config.local.yaml

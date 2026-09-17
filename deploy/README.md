@@ -34,6 +34,47 @@ The production API accepts proxy headers because it has no published host port a
 
 Keep the inner proxy bound to `127.0.0.1`, expose only the host TLS proxy to the Internet, and configure that host proxy to overwrite the forwarding headers it receives from clients. Do not publish the API container port or expose the inner proxy directly: doing either would let an untrusted client supply headers that the API is configured to trust.
 
+## Google Drive service-account credentials
+
+The Drive importer authenticates with a Google service account that holds Viewer
+access to the Shared Drive, so long imports are no longer cut short by an
+expiring access token. The key is mounted read only at runtime and is never
+copied into the image.
+
+Set these in `deploy/.env.prod`:
+
+```
+GOOGLE_DRIVE_SERVICE_ACCOUNT_HOST_FILE=/etc/cv-pipeline/google-drive-service-account.json
+GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE=/run/secrets/google-drive-service-account.json
+GOOGLE_DRIVE_SHARED_DRIVE_ID=
+```
+
+`GOOGLE_DRIVE_SERVICE_ACCOUNT_HOST_FILE` is the host path and is only ever a
+compose bind source; no host path appears in application source. It defaults to
+`deploy/service-account.placeholder.json`, a committed non-credential, so the
+mount always resolves on deployments that do not use Drive.
+`GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE` is the container path the API reads, and is
+what switches service-account authentication on. `compose.prod.yml` mounts the
+key at `/run/secrets/google-drive-service-account.json:ro` on the `api` service
+only; the watcher does not import from Drive.
+
+Store the key outside the repository, owned by root with mode `0400` or `0440`,
+readable by the container user. Setting `GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE`
+without `GOOGLE_DRIVE_SERVICE_ACCOUNT_HOST_FILE` mounts the placeholder, and the
+API rejects it at request time with an error naming the missing key fields.
+
+`GOOGLE_DRIVE_SHARED_DRIVE_ID` is optional. When set, folder listings add
+`corpora=drive` and `driveId=<id>`, which is what Google recommends for a service
+account. When empty, listings keep today's `includeItemsFromAllDrives` behaviour.
+
+`GOOGLE_DRIVE_ACCESS_TOKEN` / `GOOGLE_DRIVE_BEARER_TOKEN` and
+`GOOGLE_DRIVE_API_KEY` still work and are read only when
+`GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE` is empty, so migration needs no flag day.
+
+Credentials and the access token are cached in memory and keyed on the key
+file's mtime and size: replacing the mounted file rotates the credential on the
+next Drive call without a restart.
+
 ## Roll back
 
 ```sh
