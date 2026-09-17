@@ -2902,11 +2902,29 @@ async def get_staging_seniorities(
 
 
 @app.post("/api/v1/staging/google-drive/import")
-async def import_google_drive_cvs(
+def import_google_drive_cvs(
     body: _GoogleDriveImportRequest,
     current_user: TokenPayload = Depends(get_current_user),
 ):
-    """Import CV PDFs/DOCX/DOC files from Google Drive into the local staging folder."""
+    """Import CV PDFs/DOCX/DOC files from Google Drive into the local staging folder.
+
+    Deliberately a plain `def`, not `async def`.
+
+    Every Drive call underneath this - metadata, folder listing, each file
+    download - goes through service.google_drive_import, which uses blocking
+    urllib. Declared `async`, that blocking I/O ran directly on the event loop,
+    so a single Drive import (one measured at ~53 seconds) stalled every other
+    request the API was serving.
+
+    As a sync endpoint, FastAPI runs it in its worker threadpool instead, and
+    the event loop stays free. There is no `await` in the body, so this is a
+    declaration change only: route, request schema, RBAC, the 50/100
+    interactive limits, staging writes and the service-account auth path are all
+    untouched.
+
+    If this handler ever gains genuinely async work, move that work out rather
+    than restoring `async def` around the blocking importer.
+    """
     if body.seniority and not body.profile:
         raise HTTPException(status_code=400, detail="La seniorite ne peut pas etre definie sans un profil.")
     if body.seniority and body.seniority.lower() not in _VALID_SENIORITIES:

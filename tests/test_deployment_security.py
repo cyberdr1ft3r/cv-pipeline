@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import unittest
 from pathlib import Path
 
@@ -95,6 +96,88 @@ class DeploymentSecurityTests(unittest.TestCase):
         self.assertIn("--proxy-headers", api["command"])
         self.assertIn("--forwarded-allow-ips=*", api["command"])
         self.assertEqual(proxy["ports"], ["${HTTP_BIND_ADDRESS:-127.0.0.1}:${HTTP_PORT:-8080}:80"])
+
+
+class InnerProxyTimeoutTests(unittest.TestCase):
+    """The inner nginx must outlive a Google Drive import.
+
+    A Drive import is one long request: the API walks the Shared Drive and
+    downloads each CV before responding. One measured at ~53s in production and
+    was being cut off by nginx's 60s proxy_read_timeout default. These pin the
+    hotfix into source so the next image cannot ship without it.
+    """
+
+    REQUIRED_API_TIMEOUTS = {
+        "proxy_connect_timeout": "10s",
+        "proxy_send_timeout": "300s",
+        "proxy_read_timeout": "300s",
+    }
+
+    @staticmethod
+    def _location_body(config: str, location: str) -> str:
+        """Return the directives inside a single nginx location block."""
+        start = config.index(f"location {location} {{")
+        depth = 0
+        for index in range(start, len(config)):
+            if config[index] == "{":
+                depth += 1
+            elif config[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    return config[start : index + 1]
+        raise AssertionError(f"unterminated location {location}")
+
+    def setUp(self) -> None:
+        self.config = (ROOT / "deploy" / "nginx.conf").read_text(encoding="utf-8")
+        self.api_block = self._location_body(self.config, "/api/v1/")
+        self.frontend_block = self._location_body(self.config, "/")
+
+    def test_api_proxy_declares_the_required_timeouts(self) -> None:
+        for directive, value in self.REQUIRED_API_TIMEOUTS.items():
+            with self.subTest(directive=directive):
+                self.assertIn(f"{directive} {value};", self.api_block)
+
+    def test_api_read_timeout_outlives_a_slow_drive_import(self) -> None:
+        # The production failure was a 53s import against a 60s default.
+        match = re.search(r"proxy_read_timeout\s+(\d+)s;", self.api_block)
+        self.assertIsNotNone(match, "the API proxy must set proxy_read_timeout")
+        assert match is not None
+        self.assertGreaterEqual(
+            int(match.group(1)),
+            120,
+            "proxy_read_timeout must leave room for a long Drive import",
+        )
+
+    def test_api_connect_timeout_stays_short(self) -> None:
+        # The API is one hop away on the internal network: a slow connect means
+        # a dead upstream, not a slow one.
+        match = re.search(r"proxy_connect_timeout\s+(\d+)s;", self.api_block)
+        self.assertIsNotNone(match)
+        assert match is not None
+        self.assertLessEqual(int(match.group(1)), 15)
+
+    def test_timeouts_are_scoped_to_the_api_location_only(self) -> None:
+        # The frontend proxy is deliberately left on nginx defaults.
+        for directive in self.REQUIRED_API_TIMEOUTS:
+            with self.subTest(directive=directive):
+                self.assertNotIn(directive, self.frontend_block)
+
+    def test_no_proxy_timeouts_leak_to_the_server_scope(self) -> None:
+        # A server-level directive would silently apply to the frontend too.
+        outside = self.config.replace(self.api_block, "")
+        for directive in self.REQUIRED_API_TIMEOUTS:
+            with self.subTest(directive=directive):
+                self.assertNotIn(directive, outside)
+
+    def test_api_proxy_keeps_its_forwarding_headers(self) -> None:
+        # The timeout hotfix must not have disturbed the trust boundary.
+        self.assertIn("proxy_pass http://api:8000/api/v1/;", self.api_block)
+        self.assertIn("X-Forwarded-For $trusted_forwarded_for", self.api_block)
+        self.assertIn("X-Forwarded-Proto $trusted_forwarded_proto", self.api_block)
+        self.assertIn("X-Real-IP $trusted_real_ip", self.api_block)
+
+    def test_config_is_balanced(self) -> None:
+        self.assertEqual(self.config.count("{"), self.config.count("}"))
 
 
 if __name__ == "__main__":
