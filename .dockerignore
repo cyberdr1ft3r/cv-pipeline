@@ -24,6 +24,16 @@ __pycache__
 **/.env
 **/.env.*
 
+# Credentials - never bake a Google service-account key into the image.
+# The key is mounted read-only at runtime, never copied at build time.
+*service-account*.json
+**/*service-account*.json
+*service_account*.json
+**/*service_account*.json
+secrets
+.local-secrets
+**/.local-secrets
+
 # Local data and logs
 data
 logs

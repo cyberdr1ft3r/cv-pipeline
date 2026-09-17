@@ -10,6 +10,8 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Iterable
 
+from service import google_drive_auth
+
 
 DRIVE_API_BASE = "https://www.googleapis.com/drive/v3"
 DRIVE_FILE_RE = re.compile(r"/file/d/([^/]+)")
@@ -89,6 +91,13 @@ def list_folder_files(folder_url_or_id: str, *, max_files: int = 50) -> list[Dri
                 "supportsAllDrives": "true",
                 "includeItemsFromAllDrives": "true",
             }
+            # Scoping the corpus to one Shared Drive is what Google recommends for
+            # a service account, which has no My Drive of its own. Off by default
+            # so an unconfigured deployment keeps today's allDrives behaviour.
+            drive_id = google_drive_auth.shared_drive_id()
+            if drive_id:
+                params["corpora"] = "drive"
+                params["driveId"] = drive_id
             if page_token:
                 params["pageToken"] = page_token
 
@@ -185,8 +194,9 @@ def _drive_json(path: str, params: dict[str, str]) -> dict:
     except urllib.error.HTTPError as exc:
         if exc.code in {401, 403}:
             raise GoogleDriveImportError(
-                "Google Drive access denied. Set GOOGLE_DRIVE_ACCESS_TOKEN for private files "
-                "or GOOGLE_DRIVE_API_KEY for public/shared files."
+                "Google Drive access denied. Point GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE at a "
+                "service-account key with Viewer access to the Shared Drive, or set "
+                "GOOGLE_DRIVE_API_KEY for public files."
             ) from exc
         raise GoogleDriveImportError(f"Google Drive API failed with HTTP {exc.code}.") from exc
     except OSError as exc:
@@ -201,11 +211,32 @@ def _api_url(path: str, params: dict[str, str]) -> str:
 
 
 def _headers() -> dict[str, str]:
-    token = (
-        os.getenv("GOOGLE_DRIVE_ACCESS_TOKEN", "").strip()
-        or os.getenv("GOOGLE_DRIVE_BEARER_TOKEN", "").strip()
-    )
     headers = {"Accept": "application/json"}
+    token = _access_token()
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return headers
+
+
+def _access_token() -> str:
+    """Resolve the bearer token for a Drive call.
+
+    A service-account key wins whenever one is configured, because it mints
+    fresh tokens indefinitely instead of expiring mid-import. The hand-pasted
+    GOOGLE_DRIVE_ACCESS_TOKEN / GOOGLE_DRIVE_BEARER_TOKEN variables stay
+    supported for deployments that have not been migrated yet.
+    """
+    try:
+        token = google_drive_auth.get_access_token()
+    except google_drive_auth.GoogleDriveAuthError as exc:
+        # str(exc) is built from the configured path, the exception type and the
+        # service-account email - it never carries key material or a token.
+        raise GoogleDriveImportError(str(exc)) from exc
+
+    if token:
+        return token
+
+    return (
+        os.getenv("GOOGLE_DRIVE_ACCESS_TOKEN", "").strip()
+        or os.getenv("GOOGLE_DRIVE_BEARER_TOKEN", "").strip()
+    )

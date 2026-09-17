@@ -62,6 +62,8 @@ services:
       CV_STORAGE_ROOT: ${CV_STORAGE_ROOT:-/sftp/cv_tech/files}
       CV_LIBRARY_ROOT: ${CV_LIBRARY_ROOT:-/sftp/cv_tech/files/CV_Theque}
       DATA_ROOT: ${DATA_ROOT:-/sftp/cv_tech/files/Data}
+      GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE: ${GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE:-}
+      GOOGLE_DRIVE_SHARED_DRIVE_ID: ${GOOGLE_DRIVE_SHARED_DRIVE_ID:-}
       GOOGLE_DRIVE_ACCESS_TOKEN: ${GOOGLE_DRIVE_ACCESS_TOKEN:-}
       GOOGLE_DRIVE_API_KEY: ${GOOGLE_DRIVE_API_KEY:-}
       SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY (min 32 chars)}
@@ -69,6 +71,7 @@ services:
     volumes:
       - ${CV_STORAGE_ROOT:-/sftp/cv_tech/files}:/sftp/cv_tech/files
       - ./config:/app/config:ro
+      - ${GOOGLE_DRIVE_SERVICE_ACCOUNT_HOST_FILE:-./deploy/service-account.placeholder.json}:/run/secrets/google-drive-service-account.json:ro
       - ./logs:/app/logs
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/api/v1/health >/dev/null 2>&1 || exit 1"]
