@@ -44,6 +44,8 @@ class DriveFile:
     mime_type: str
     size: int | None = None
     web_url: str | None = None
+    modified_time: str | None = None
+    md5_checksum: str | None = None
 
 
 def extract_drive_id(url_or_id: str, *, folder: bool = False) -> str:
@@ -138,6 +140,69 @@ def list_folder_files(folder_url_or_id: str, *, max_files: int = 50) -> list[Dri
             page_token = data.get("nextPageToken")
             if not page_token:
                 break
+
+    return result
+
+
+def list_shared_drive_files(drive_id: str | None = None) -> list[DriveFile]:
+    """Inventory every supported CV in a Shared Drive without interactive caps."""
+    shared_drive = (drive_id or google_drive_auth.shared_drive_id()).strip()
+    if not shared_drive:
+        raise GoogleDriveImportError(
+            "GOOGLE_DRIVE_SHARED_DRIVE_ID is required for bulk inventory."
+        )
+
+    mime_query = " or ".join(
+        f"mimeType = '{mime_type}'"
+        for mime_type in sorted(SUPPORTED_FILE_MIME_TYPES)
+    )
+    seen_ids: set[str] = set()
+    result: list[DriveFile] = []
+    page_token: str | None = None
+
+    while True:
+        params = {
+            "q": f"trashed = false and ({mime_query})",
+            "corpora": "drive",
+            "driveId": shared_drive,
+            "includeItemsFromAllDrives": "true",
+            "supportsAllDrives": "true",
+            "spaces": "drive",
+            "pageSize": "1000",
+            "fields": (
+                "nextPageToken,"
+                "files(id,name,mimeType,size,modifiedTime,md5Checksum,webViewLink)"
+            ),
+        }
+        if page_token:
+            params["pageToken"] = page_token
+
+        data = _drive_json("/files", params)
+        for item in data.get("files", []):
+            file_id = item.get("id")
+            mime_type = item.get("mimeType") or ""
+            if (
+                not file_id
+                or file_id in seen_ids
+                or mime_type not in SUPPORTED_FILE_MIME_TYPES
+            ):
+                continue
+            seen_ids.add(file_id)
+            result.append(
+                DriveFile(
+                    file_id=file_id,
+                    name=item.get("name") or file_id,
+                    mime_type=mime_type,
+                    size=int(item["size"]) if item.get("size") else None,
+                    web_url=item.get("webViewLink"),
+                    modified_time=item.get("modifiedTime"),
+                    md5_checksum=item.get("md5Checksum"),
+                )
+            )
+
+        page_token = data.get("nextPageToken")
+        if not page_token:
+            break
 
     return result
 
