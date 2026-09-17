@@ -35,10 +35,12 @@ import tempfile
 import threading
 import unicodedata
 import time
+import zipfile
 from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from xml.etree import ElementTree
 
 # â”€â”€â”€ Bootstrap: trigger env loading chain (same as rest of monolith) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Must come before any os.getenv() calls.
@@ -167,13 +169,108 @@ def _extract_text_pdf(path: str) -> str:
     return text.strip()
 
 
-def _extract_text_docx(path: str) -> str:
-    """Extract text from DOCX / DOC."""
-    from docx import Document
+_WORD_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_WORD_PARAGRAPH = f"{{{_WORD_NAMESPACE}}}p"
+_WORD_TEXT = f"{{{_WORD_NAMESPACE}}}t"
+_WORD_TAB = f"{{{_WORD_NAMESPACE}}}tab"
+_WORD_BREAKS = {
+    f"{{{_WORD_NAMESPACE}}}br",
+    f"{{{_WORD_NAMESPACE}}}cr",
+}
 
-    doc = Document(path)
-    paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-    return "\n\n".join(paragraphs)
+
+class UnsupportedLegacyDocError(ValueError):
+    """Raised when the watcher receives a legacy binary Word document."""
+
+
+def _normalize_extracted_text(text: str) -> str:
+    """Normalize whitespace while retaining useful paragraph boundaries."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n").replace("\xa0", " ")
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.split("\n")]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def _extract_docx_xml_part(xml_data: bytes) -> List[str]:
+    """Return each Word paragraph once, including paragraphs nested in textboxes."""
+    root = ElementTree.fromstring(xml_data)
+    parent_by_child = {
+        child: parent
+        for parent in root.iter()
+        for child in parent
+    }
+    paragraphs: List[str] = []
+
+    for paragraph in root.iter(_WORD_PARAGRAPH):
+        fragments: List[str] = []
+        for node in paragraph.iter():
+            if node is paragraph:
+                continue
+
+            ancestor = parent_by_child.get(node)
+            while ancestor is not None and ancestor.tag != _WORD_PARAGRAPH:
+                ancestor = parent_by_child.get(ancestor)
+            if ancestor is not paragraph:
+                # A nested w:p (for example, w:txbxContent) is emitted by its
+                # own iteration. Excluding it here avoids duplicate textbox text.
+                continue
+
+            if node.tag == _WORD_TEXT and node.text:
+                fragments.append(node.text)
+            elif node.tag == _WORD_TAB:
+                fragments.append("\t")
+            elif node.tag in _WORD_BREAKS:
+                fragments.append("\n")
+
+        normalized = _normalize_extracted_text("".join(fragments))
+        if normalized:
+            paragraphs.append(normalized)
+
+    return paragraphs
+
+
+def _extract_text_docx(path: str) -> str:
+    """Extract DOCX body, textbox, header, and footer text from Word XML."""
+    source = Path(path)
+    if source.suffix.lower() == ".doc":
+        raise UnsupportedLegacyDocError(
+            "unsupported legacy .doc format; conversion to .docx is required"
+        )
+
+    try:
+        with zipfile.ZipFile(source) as archive:
+            names = archive.namelist()
+            part_names = ["word/document.xml"]
+            part_names.extend(
+                sorted(
+                    name
+                    for name in names
+                    if name.startswith("word/header") and name.endswith(".xml")
+                )
+            )
+            part_names.extend(
+                sorted(
+                    name
+                    for name in names
+                    if name.startswith("word/footer") and name.endswith(".xml")
+                )
+            )
+            paragraphs = [
+                paragraph
+                for part_name in part_names
+                for paragraph in _extract_docx_xml_part(archive.read(part_name))
+            ]
+    except (KeyError, OSError, ElementTree.ParseError, zipfile.BadZipFile) as exc:
+        logger.warning(
+            "[Extract] Direct DOCX XML extraction failed for %s; using python-docx fallback: %s",
+            source.name,
+            exc,
+        )
+        from docx import Document
+
+        doc = Document(source)
+        paragraphs = [paragraph.text for paragraph in doc.paragraphs]
+
+    return _normalize_extracted_text("\n\n".join(paragraphs))
 
 
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -308,7 +405,7 @@ def _validation_prompt(cv_text: str, broken_json: str) -> str:
 def _extract_cv_json(cv_text: str) -> Dict:
     """LLM extraction with validation repair when JSON parsing fails."""
     prompt = _EXTRACTION_PROMPT.format(cv_text=cv_text)
-    raw_response = _call_llm(prompt)
+    raw_response = _call_llm(prompt, reject_truncated=True)
     if not raw_response:
         raise RuntimeError("LLM extraction returned no response")
 
@@ -320,7 +417,10 @@ def _extract_cv_json(cv_text: str) -> Dict:
             len(raw_response),
         )
 
-    validated_raw = _call_llm(_validation_prompt(cv_text, raw_response))
+    validated_raw = _call_llm(
+        _validation_prompt(cv_text, raw_response),
+        reject_truncated=True,
+    )
     if not validated_raw:
         raise ValueError("Could not parse LLM JSON response after cleaning and repair")
 
@@ -342,6 +442,7 @@ def _call_llm(
     prompt: str,
     system_prompt: Optional[str] = None,
     use_fallback: bool = True,
+    reject_truncated: bool = False,
 ) -> Optional[str]:
     """Call OpenRouter with retry and fallback models."""
     primary = _CONFIG["api"]["model"]
@@ -366,7 +467,17 @@ def _call_llm(
                     temperature=_CONFIG["api"]["temperature"],
                     max_tokens=_CONFIG["api"]["max_tokens"],
                 )
-                return response.choices[0].message.content
+                choice = response.choices[0]
+                if reject_truncated and choice.finish_reason == "length":
+                    logger.error(
+                        "[LLM] Rejected truncated response: model=%s attempt=%d/%d finish_reason=%s",
+                        model,
+                        attempt + 1,
+                        retries,
+                        choice.finish_reason,
+                    )
+                    return None
+                return choice.message.content
             except Exception as exc:
                 logger.warning(
                     "[LLM] Attempt %d/%d with %s failed: %s",
@@ -812,8 +923,12 @@ class CVProcessor:
             suffix = local_file.suffix.lower()
             if suffix == ".pdf":
                 cv_text = _extract_text_pdf(str(local_file))
-            elif suffix in (".docx", ".doc"):
+            elif suffix == ".docx":
                 cv_text = _extract_text_docx(str(local_file))
+            elif suffix == ".doc":
+                raise UnsupportedLegacyDocError(
+                    "unsupported legacy .doc format; original preserved for later conversion"
+                )
             else:
                 raise ValueError(f"Unsupported extension: {suffix}")
 
