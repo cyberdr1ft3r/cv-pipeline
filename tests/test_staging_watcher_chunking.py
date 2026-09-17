@@ -78,7 +78,7 @@ def _llm_response(content: str, finish_reason: str = "stop") -> SimpleNamespace:
 class ChunkerTests(unittest.TestCase):
     def test_short_text_is_one_chunk(self) -> None:
         self.assertEqual(
-            chunk_cv_text("Short CV paragraph.", chunk_chars=100),
+            chunk_cv_text("Short CV paragraph."),
             ["Short CV paragraph."],
         )
 
