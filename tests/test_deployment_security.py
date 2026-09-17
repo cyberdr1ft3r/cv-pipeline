@@ -24,8 +24,17 @@ class DeploymentSecurityTests(unittest.TestCase):
 
         self.assertEqual(watcher["profiles"], ["watcher"])
         self.assertEqual(watcher["image"], api["image"])
+        self.assertEqual(watcher["restart"], "unless-stopped")
         self.assertEqual(watcher["command"], ["python", "-m", "script.staging_watcher"])
         self.assertIn("environment", watcher)
+        self.assertEqual(
+            watcher["environment"]["CV_STORAGE_ROOT"],
+            "/sftp/cv_tech/files",
+        )
+        self.assertEqual(
+            watcher["environment"]["WATCHER_STAGING_PATH"],
+            "/sftp/cv_tech/files/staging",
+        )
         self.assertEqual(
             watcher["environment"]["OPENROUTER_API_KEY"],
             "${OPENROUTER_API_KEY:?Set OPENROUTER_API_KEY}",
@@ -33,6 +42,7 @@ class DeploymentSecurityTests(unittest.TestCase):
         self.assertIn("cv_storage:/sftp/cv_tech/files", watcher["volumes"])
         self.assertIn("./config:/app/config:ro", watcher["volumes"])
         self.assertIn("healthcheck", watcher)
+        self.assertEqual(watcher["healthcheck"]["test"], ["CMD-SHELL", "kill -0 1"])
         self.assertIn("postgres", watcher["depends_on"])
         self.assertIn("api", watcher["depends_on"])
 
