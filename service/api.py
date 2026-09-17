@@ -66,6 +66,30 @@ from service.cv_alignment import (
     write_alignment_status,
 )
 
+
+_TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+_FALSE_ENV_VALUES = frozenset({"0", "false", "no", "off"})
+
+
+def _read_bool_env(name: str, *, default: bool) -> bool:
+    """Read a boolean environment variable without truthy-string surprises."""
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+
+    value = raw_value.strip().lower()
+    if value in _TRUE_ENV_VALUES:
+        return True
+    if value in _FALSE_ENV_VALUES:
+        return False
+    raise RuntimeError(
+        f"{name} must be one of: "
+        f"{', '.join(sorted(_TRUE_ENV_VALUES | _FALSE_ENV_VALUES))}"
+    )
+
+
+COOKIE_SECURE = _read_bool_env("COOKIE_SECURE", default=False)
+
 # Security & Logging Modules
 
 
@@ -1613,7 +1637,7 @@ async def auth_login(body: _LoginRequest, response: Response):
         value=token,
         httponly=True,
         samesite="lax",
-        secure=False,   # set True in production behind HTTPS
+        secure=COOKIE_SECURE,
         max_age=1800,   # 30 minutes
         path="/",       # explicit â€” ensures cookie is sent for all API paths
     )

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { AlertCircle, Check, Loader2 } from 'lucide-react';
 import { PipelineShell } from '@/app/components/pipeline/PipelineShell';
@@ -62,7 +62,7 @@ function normalizeErrorMessage(error: unknown) {
   return 'Erreur inconnue';
 }
 
-export default function PipelineFinalPage() {
+function PipelineFinalContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const jobId = searchParams.get('jobId');
@@ -261,4 +261,8 @@ const sortedRows = useMemo(
       </div>
     </PipelineShell>
   );
+}
+
+export default function PipelineFinalPage() {
+  return <Suspense fallback={null}><PipelineFinalContent /></Suspense>;
 }

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { AlertCircle, Check, FileText, Loader2, User } from 'lucide-react';
 import { PipelineShell } from '@/app/components/pipeline/PipelineShell';
@@ -40,7 +40,7 @@ const TEMPLATES: Template[] = [
   },
 ];
 
-export default function TemplateSelectPage() {
+function TemplateSelectContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const jobId = searchParams.get('jobId');
@@ -333,4 +333,8 @@ export default function TemplateSelectPage() {
       </div>
     </PipelineShell>
   );
+}
+
+export default function TemplateSelectPage() {
+  return <Suspense fallback={null}><TemplateSelectContent /></Suspense>;
 }

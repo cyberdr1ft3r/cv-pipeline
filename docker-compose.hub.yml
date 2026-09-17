@@ -27,6 +27,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-cv_pipeline}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      API_DB_PASSWORD: ${API_DB_PASSWORD:?Set API_DB_PASSWORD in .env}
+      N8N_DB_PASSWORD: ${N8N_DB_PASSWORD:?Set N8N_DB_PASSWORD in .env}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       # Self-initializing schema on first run: bootstrap applies db_init.sql

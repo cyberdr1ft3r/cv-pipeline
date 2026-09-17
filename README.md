@@ -17,9 +17,9 @@ An intelligent, automated CV screening and candidate ranking system that leverag
 ### Using Docker (Recommended)
 
 ```bash
-git clone https://github.com/yourusername/CVs_project.git
-cd CVs_project
-docker-compose up -d
+git clone https://github.com/cyberdr1ft3r/cv-pipeline.git
+cd cv-pipeline
+docker compose -f compose.dev.yml up -d --build
 
 # Access endpoints
 API:       http://localhost:8000
@@ -330,15 +330,17 @@ See [tests/README.md](tests/README.md) for comprehensive testing guide and [CONT
 ### With Docker Compose
 
 ```bash
-# Production mode
-docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# Prepare deploy/.env.prod from deploy/env.prod.example, then deploy immutable images
+deploy/deploy.sh 2026.09.16-1
 
 # View logs
-docker-compose logs -f api
+docker compose --env-file deploy/.env.prod -f compose.prod.yml logs -f api
 
 # Stop services
-docker-compose down
+docker compose --env-file deploy/.env.prod -f compose.prod.yml down
 ```
+
+See `deploy/README.md` for reverse-proxy, health-check, optional-service, and rollback guidance. The legacy chatbot is not started by the production stack.
 
 ### Services
 
@@ -469,7 +471,7 @@ A: Yes! Update `LLM_MODEL` in `.env` to any OpenRouter-supported model.
 A: See [ARCHITECTURE.md - Scalability](ARCHITECTURE.md#scalability) for horizontal scaling strategies.
 
 **Q: How do I deploy to production?**
-A: Use `docker-compose.prod.yml` or see Kubernetes examples in [ARCHITECTURE.md](ARCHITECTURE.md).
+A: Use the versioned-image workflow in `deploy/README.md`.
 
 **Q: Where are results stored?**
 A: By default in `data/final_result/` directory and PostgreSQL database.

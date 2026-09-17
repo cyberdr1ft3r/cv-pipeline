@@ -7,6 +7,7 @@ import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -222,6 +223,73 @@ class ApiSecurityBoundaryTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["failed_count"], 1)
         self.assertFalse((self.root / "escape").exists())
+
+
+class AuthCookieSecurityTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.client = TestClient(api.app)
+        self.original_cookie_secure = api.COOKIE_SECURE
+
+    def tearDown(self) -> None:
+        api.COOKIE_SECURE = self.original_cookie_secure
+
+    def _login(self, *, secure: bool):
+        api.COOKIE_SECURE = secure
+        user = SimpleNamespace(
+            id=OWNER_ID,
+            role="recruiter",
+            email="owner@example.test",
+            full_name="Test Owner",
+            hashed_password="unused",
+            deleted_at=None,
+            is_active=True,
+        )
+        with (
+            patch.object(api, "get_user_by_email_any", return_value=user),
+            patch("service.security.verify_password", return_value=True),
+            patch.object(api, "create_access_token", return_value="test-token"),
+            patch.object(api, "update_last_login"),
+            patch.object(api.audit_store, "log_event"),
+        ):
+            return self.client.post(
+                "/api/v1/auth/login",
+                json={"email": user.email, "password": "valid-password"},
+            )
+
+    def test_production_login_cookie_is_secure(self) -> None:
+        response = self._login(secure=True)
+
+        self.assertEqual(response.status_code, 200)
+        attributes = {
+            part.strip().lower()
+            for part in response.headers["set-cookie"].split(";")
+        }
+        self.assertIn("secure", attributes)
+        self.assertIn("httponly", attributes)
+        self.assertIn("samesite=lax", attributes)
+        self.assertIn("path=/", attributes)
+        self.assertIn("max-age=1800", attributes)
+
+    def test_development_login_cookie_remains_usable_over_http(self) -> None:
+        response = self._login(secure=False)
+
+        self.assertEqual(response.status_code, 200)
+        attributes = {
+            part.strip().lower()
+            for part in response.headers["set-cookie"].split(";")
+        }
+        self.assertNotIn("secure", attributes)
+        self.assertIn("httponly", attributes)
+        self.assertIn("samesite=lax", attributes)
+
+    def test_cookie_secure_environment_parser_is_strict(self) -> None:
+        with patch.dict("os.environ", {"COOKIE_SECURE": "YeS"}):
+            self.assertTrue(api._read_bool_env("COOKIE_SECURE", default=False))
+        with patch.dict("os.environ", {"COOKIE_SECURE": "off"}):
+            self.assertFalse(api._read_bool_env("COOKIE_SECURE", default=True))
+        with patch.dict("os.environ", {"COOKIE_SECURE": "sometimes"}):
+            with self.assertRaises(RuntimeError):
+                api._read_bool_env("COOKIE_SECURE", default=False)
 
 
 if __name__ == "__main__":
