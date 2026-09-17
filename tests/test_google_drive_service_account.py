@@ -509,6 +509,170 @@ class SharedDriveTests(NoNetworkTestCase):
         self.assertEqual(len(capped), 100)
 
 
+def drive_http_error(status: int, message: str = "Unauthorized") -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(
+        "https://www.googleapis.com/drive/v3/files",
+        status,
+        message,
+        {},
+        io.BytesIO(json.dumps({"error": {"code": status}}).encode("utf-8")),
+    )
+
+
+class UnauthorizedRetryTests(NoNetworkTestCase):
+    """A rejected cached token must be re-minted once, not replayed for an hour."""
+
+    @contextmanager
+    def service_account_drive(self, tokens):
+        """Drive calls authenticated by a service account that mints `tokens`."""
+        path = self.write_key_file()
+        credentials = FakeCredentials(tokens=tokens)
+        with drive_env(GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE=path):
+            with patch.object(
+                google_drive_auth, "_load_credentials", return_value=credentials
+            ):
+                yield credentials
+
+    @staticmethod
+    def sent_tokens(urlopen) -> list[str]:
+        return [
+            call.args[0].headers.get("Authorization")
+            for call in urlopen.call_args_list
+        ]
+
+    def test_first_401_is_retried_once_with_a_fresh_token(self) -> None:
+        page = {"files": [{"id": "cv-1", "mimeType": "application/pdf"}]}
+
+        with self.service_account_drive(["stale-token", "fresh-token"]) as credentials:
+            with patch("urllib.request.urlopen") as urlopen:
+                urlopen.side_effect = [drive_http_error(401), json_response(page)]
+                files = google_drive_import.list_folder_files("root", max_files=10)
+
+        self.assertEqual([item.file_id for item in files], ["cv-1"])
+        self.assertEqual(urlopen.call_count, 2)
+        # The retry carries a token minted after the cache was invalidated.
+        self.assertEqual(
+            self.sent_tokens(urlopen),
+            ["Bearer stale-token", "Bearer fresh-token"],
+        )
+        self.assertEqual(credentials.refresh_calls, 2)
+
+    def test_two_consecutive_401s_fail_after_exactly_one_retry(self) -> None:
+        with self.service_account_drive(["stale-token", "also-rejected"]):
+            with patch("urllib.request.urlopen") as urlopen:
+                urlopen.side_effect = [drive_http_error(401), drive_http_error(401)]
+                with self.assertRaises(
+                    google_drive_import.GoogleDriveImportError
+                ) as caught:
+                    google_drive_import.list_folder_files("root", max_files=10)
+
+        self.assertEqual(urlopen.call_count, 2)
+        self.assertIn("access denied", str(caught.exception).lower())
+
+    def test_403_is_never_retried(self) -> None:
+        """403 is a permission problem; a fresh token would be rejected too."""
+        with self.service_account_drive(["only-token"]) as credentials:
+            with patch("urllib.request.urlopen") as urlopen:
+                urlopen.side_effect = drive_http_error(403, "Forbidden")
+                with self.assertRaises(google_drive_import.GoogleDriveImportError):
+                    google_drive_import.list_folder_files("root", max_files=10)
+
+        self.assertEqual(urlopen.call_count, 1)
+        self.assertEqual(credentials.refresh_calls, 1)
+
+    def test_other_http_errors_are_not_retried(self) -> None:
+        with self.service_account_drive(["only-token"]):
+            with patch("urllib.request.urlopen") as urlopen:
+                urlopen.side_effect = drive_http_error(500, "Server Error")
+                with self.assertRaises(google_drive_import.GoogleDriveImportError):
+                    google_drive_import.list_folder_files("root", max_files=10)
+
+        self.assertEqual(urlopen.call_count, 1)
+
+    def test_legacy_static_token_401_is_not_retried(self) -> None:
+        """Nothing to re-mint, so a retry would only double a failing request."""
+        with drive_env(GOOGLE_DRIVE_ACCESS_TOKEN=LEGACY_TOKEN):
+            with patch.object(google_drive_auth, "_load_credentials") as loader:
+                with patch("urllib.request.urlopen") as urlopen:
+                    urlopen.side_effect = drive_http_error(401)
+                    with self.assertRaises(google_drive_import.GoogleDriveImportError):
+                        google_drive_import.list_folder_files("root", max_files=10)
+
+        self.assertEqual(urlopen.call_count, 1)
+        loader.assert_not_called()
+        self.assertEqual(self.sent_tokens(urlopen), [f"Bearer {LEGACY_TOKEN}"])
+
+    def test_unauthenticated_401_is_not_retried(self) -> None:
+        with drive_env():
+            with patch("urllib.request.urlopen") as urlopen:
+                urlopen.side_effect = drive_http_error(401)
+                with self.assertRaises(google_drive_import.GoogleDriveImportError):
+                    google_drive_import.list_folder_files("root", max_files=10)
+
+        self.assertEqual(urlopen.call_count, 1)
+
+    def test_downloads_retry_on_401_too(self) -> None:
+        payload = b"%PDF-1.7 cv bytes"
+        response = MagicMock()
+        response.read.return_value = payload
+        opened = MagicMock()
+        opened.__enter__.return_value = response
+        opened.__exit__.return_value = False
+
+        with self.service_account_drive(["stale-token", "fresh-token"]):
+            with patch("urllib.request.urlopen") as urlopen:
+                urlopen.side_effect = [drive_http_error(401), opened]
+                content = google_drive_import.download_file("cv-1", max_bytes=1024)
+
+        self.assertEqual(content, payload)
+        self.assertEqual(urlopen.call_count, 2)
+        self.assertEqual(
+            self.sent_tokens(urlopen),
+            ["Bearer stale-token", "Bearer fresh-token"],
+        )
+
+    def test_download_two_401s_fail_after_exactly_one_retry(self) -> None:
+        with self.service_account_drive(["stale-token", "also-rejected"]):
+            with patch("urllib.request.urlopen") as urlopen:
+                urlopen.side_effect = [drive_http_error(401), drive_http_error(401)]
+                with self.assertRaises(
+                    google_drive_import.GoogleDriveImportError
+                ) as caught:
+                    google_drive_import.download_file("cv-1", max_bytes=1024)
+
+        self.assertEqual(urlopen.call_count, 2)
+        self.assertIn("cannot access this file", str(caught.exception))
+
+    def test_download_403_is_never_retried(self) -> None:
+        with self.service_account_drive(["only-token"]):
+            with patch("urllib.request.urlopen") as urlopen:
+                urlopen.side_effect = drive_http_error(403, "Forbidden")
+                with self.assertRaises(google_drive_import.GoogleDriveImportError):
+                    google_drive_import.download_file("cv-1", max_bytes=1024)
+
+        self.assertEqual(urlopen.call_count, 1)
+
+    def test_retry_does_not_leak_tokens_into_logs_or_errors(self) -> None:
+        with self.service_account_drive([ACCESS_TOKEN, ACCESS_TOKEN]):
+            with patch("urllib.request.urlopen") as urlopen:
+                urlopen.side_effect = [drive_http_error(401), drive_http_error(401)]
+                with self.assertLogs(
+                    "cv_pipeline.google_drive_import", level="DEBUG"
+                ) as logs:
+                    with self.assertRaises(
+                        google_drive_import.GoogleDriveImportError
+                    ) as caught:
+                        google_drive_import.list_folder_files("root", max_files=10)
+
+        output = "\n".join(logs.output)
+        self.assertIn("HTTP 401", output)
+        for secret in SECRETS:
+            self.assertNotIn(secret, output)
+            self.assertNotIn(secret, str(caught.exception))
+        self.assertNotIn("Bearer", output)
+        self.assertNotIn("Authorization", output)
+
+
 class SecretRedactionTests(NoNetworkTestCase):
     def assert_no_secrets(self, text: str) -> None:
         for secret in SECRETS:

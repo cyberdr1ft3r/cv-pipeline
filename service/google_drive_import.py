@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import urllib.error
@@ -8,7 +9,7 @@ import urllib.parse
 import urllib.request
 from collections import deque
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Callable, Iterable, TypeVar
 
 from service import google_drive_auth
 
@@ -26,6 +27,10 @@ SUPPORTED_FILE_MIME_TYPES = frozenset(
     }
 )
 MAX_FOLDER_SCAN = 1000
+
+logger = logging.getLogger("cv_pipeline.google_drive_import")
+
+_T = TypeVar("_T")
 
 
 class GoogleDriveImportError(RuntimeError):
@@ -158,10 +163,14 @@ def get_file_metadata(file_url_or_id: str) -> DriveFile:
 def download_file(file_id: str, *, max_bytes: int) -> bytes:
     params = {"alt": "media", "supportsAllDrives": "true"}
     url = _api_url(f"/files/{urllib.parse.quote(file_id)}", params)
-    request = urllib.request.Request(url, headers=_headers())
-    try:
+
+    def perform() -> bytes:
+        request = urllib.request.Request(url, headers=_headers())
         with urllib.request.urlopen(request, timeout=90) as response:
-            content = response.read(max_bytes + 1)
+            return response.read(max_bytes + 1)
+
+    try:
+        content = _retry_once_on_expired_token(perform)
     except urllib.error.HTTPError as exc:
         if exc.code in {401, 403}:
             raise GoogleDriveImportError("Google Drive credentials cannot access this file.") from exc
@@ -187,10 +196,14 @@ def dedupe_files(files: Iterable[DriveFile]) -> list[DriveFile]:
 
 def _drive_json(path: str, params: dict[str, str]) -> dict:
     url = _api_url(path, params)
-    request = urllib.request.Request(url, headers=_headers())
-    try:
+
+    def perform() -> dict:
+        request = urllib.request.Request(url, headers=_headers())
         with urllib.request.urlopen(request, timeout=45) as response:
             return json.loads(response.read().decode("utf-8"))
+
+    try:
+        return _retry_once_on_expired_token(perform)
     except urllib.error.HTTPError as exc:
         if exc.code in {401, 403}:
             raise GoogleDriveImportError(
@@ -201,6 +214,34 @@ def _drive_json(path: str, params: dict[str, str]) -> dict:
         raise GoogleDriveImportError(f"Google Drive API failed with HTTP {exc.code}.") from exc
     except OSError as exc:
         raise GoogleDriveImportError(f"Google Drive API request failed: {exc}") from exc
+
+
+def _retry_once_on_expired_token(perform: Callable[[], _T]) -> _T:
+    """Run a Drive call, retrying once with a freshly minted token on HTTP 401.
+
+    Only service-account authentication is retried, and only on 401. A cached
+    access token that Google has stopped accepting would otherwise keep being
+    replayed until the local cache expires, which with a one-hour token is up to
+    55 minutes of failing imports.
+
+    403 is deliberately excluded: it means the account lacks permission on the
+    file or the Shared Drive, and a fresh token would be rejected identically.
+    The legacy static-token path is excluded too - there is nothing to re-mint,
+    so a retry would just double every failing request.
+    """
+    try:
+        return perform()
+    except urllib.error.HTTPError as exc:
+        if exc.code != 401 or not google_drive_auth.service_account_file():
+            raise
+
+    # Exactly one retry: a second 401 propagates to the caller's handler.
+    logger.info(
+        "Google Drive rejected the cached service-account token (HTTP 401); "
+        "refreshing once and retrying the request"
+    )
+    google_drive_auth.reset_credentials_cache()
+    return perform()
 
 
 def _api_url(path: str, params: dict[str, str]) -> str:
