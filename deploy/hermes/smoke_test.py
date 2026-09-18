@@ -41,9 +41,10 @@ def main() -> int:
 
         # Verify our security boundary before sending any CV content.
         toolsets = request("/v1/toolsets")
+        toolset_items = toolsets if isinstance(toolsets, list) else toolsets.get("data", [])
         enabled = [
             item.get("name")
-            for item in toolsets.get("data", [])
+            for item in toolset_items
             if item.get("enabled") is True
         ]
         if enabled:
