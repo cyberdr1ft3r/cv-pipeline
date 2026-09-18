@@ -59,12 +59,12 @@ def api_request(path: str, payload: dict[str, Any] | None = None, timeout: int =
 
 
 def ensure_safe_hermes() -> str:
-    models = api_request("/v1/models", timeout=30)
+    models = api_request("/models", timeout=30)
     model_ids = [item.get("id") for item in models.get("data", []) if item.get("id")]
     if not model_ids:
         raise RuntimeError("Hermes returned no available model")
 
-    toolsets = api_request("/v1/toolsets", timeout=30)
+    toolsets = api_request("/toolsets", timeout=30)
     enabled = [
         item.get("name")
         for item in toolsets.get("data", [])
@@ -242,7 +242,7 @@ def main() -> int:
 
             prompt = prompt_template.format(cv_text=cv_text)
             response = api_request(
-                "/v1/chat/completions",
+                "/chat/completions",
                 {
                     "model": model,
                     "messages": [
