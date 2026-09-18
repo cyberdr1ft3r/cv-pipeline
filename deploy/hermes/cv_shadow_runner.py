@@ -65,9 +65,10 @@ def ensure_safe_hermes() -> str:
         raise RuntimeError("Hermes returned no available model")
 
     toolsets = api_request("/toolsets", timeout=30)
+    toolset_items = toolsets if isinstance(toolsets, list) else toolsets.get("data", [])
     enabled = [
         item.get("name")
-        for item in toolsets.get("data", [])
+        for item in toolset_items
         if item.get("enabled") is True
     ]
     if enabled:
