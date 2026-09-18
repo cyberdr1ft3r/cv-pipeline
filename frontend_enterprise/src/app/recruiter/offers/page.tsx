@@ -1,6 +1,6 @@
 ﻿'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -162,7 +162,7 @@ function AssignModal({ offer, onClose, onAssigned }: { offer: Offer; onClose: ()
   );
 }
 
-export default function RecruiterOffersPage() {
+function RecruiterOffersContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [offers, setOffers] = useState<Offer[]>([]);
@@ -396,5 +396,9 @@ export default function RecruiterOffersPage() {
       )}
     </div>
   );
+}
+
+export default function RecruiterOffersPage() {
+  return <Suspense fallback={null}><RecruiterOffersContent /></Suspense>;
 }
 

@@ -1,5 +1,5 @@
 ﻿# Build stage
-FROM node:18-alpine AS builder
+FROM node:20-alpine AS builder
 
 WORKDIR /app
 
@@ -10,8 +10,8 @@ ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 # Copy package files
 COPY package.json package-lock.json ./
 
-# Install dependencies
-RUN npm install --legacy-peer-deps
+# Install exactly the dependency graph recorded in package-lock.json.
+RUN npm ci --legacy-peer-deps
 
 # Copy source code
 COPY . .
@@ -20,13 +20,13 @@ COPY . .
 RUN npm run build
 
 # Production stage
-FROM node:18-alpine
+FROM node:20-alpine
 
 WORKDIR /app
 
 # Install only production dependencies
 COPY package.json package-lock.json ./
-RUN npm install --legacy-peer-deps --only=production
+RUN npm ci --legacy-peer-deps --omit=dev
 
 # Copy built app from builder
 COPY --from=builder /app/.next ./.next

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { AlertCircle, Download, Loader2 } from 'lucide-react';
 import { PipelineShell } from '@/app/components/pipeline/PipelineShell';
@@ -40,7 +40,7 @@ function normalizeErrorMessage(error: unknown) {
   return 'Erreur inconnue';
 }
 
-export default function PipelineFormatPage() {
+function PipelineFormatContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const jobId = searchParams.get('jobId');
@@ -228,4 +228,8 @@ const handleDownload = () => {
       </div>
     </PipelineShell>
   );
+}
+
+export default function PipelineFormatPage() {
+  return <Suspense fallback={null}><PipelineFormatContent /></Suspense>;
 }

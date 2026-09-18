@@ -10,7 +10,18 @@
 #   /sql/migrations/*.sql                        (001..NNN migrations)
 set -euo pipefail
 
-PSQL=(psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB")
+: "${API_DB_PASSWORD:?Set API_DB_PASSWORD in the runtime environment}"
+: "${N8N_DB_PASSWORD:?Set N8N_DB_PASSWORD in the runtime environment}"
+
+PSQL=(
+  psql
+  -v ON_ERROR_STOP=1
+  -v "api_db_password=$API_DB_PASSWORD"
+  -v "n8n_db_password=$N8N_DB_PASSWORD"
+  -v "database_name=$POSTGRES_DB"
+  --username "$POSTGRES_USER"
+  --dbname "$POSTGRES_DB"
+)
 
 echo "[db-bootstrap] applying base schema (db_init.sql)"
 "${PSQL[@]}" -f /sql/db_init.sql

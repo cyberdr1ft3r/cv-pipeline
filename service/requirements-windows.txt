@@ -5,6 +5,10 @@ pydantic==2.10.6
 psycopg2-binary==2.9.9
 PyJWT==2.12.1
 python-json-logger==4.1.0
+# Google Drive service-account authentication (google-auth needs the
+# requests transport; requests is pinned to match script/requirements.txt).
+google-auth==2.58.0
+requests==2.32.3
 passlib[bcrypt]==1.7.4
 python-magic-bin==0.4.14
 openai==2.15.0

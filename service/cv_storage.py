@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
-from pathlib import Path
-from typing import Iterable, Optional
+import tempfile
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import BinaryIO, Iterable, Optional
+from uuid import uuid4
 
 
 DEFAULT_CV_STORAGE_ROOT = Path("/sftp/cv_tech/files")
@@ -13,6 +16,10 @@ DEFAULT_STAGING_PATH = DEFAULT_CV_STORAGE_ROOT / "staging"
 
 class StoragePathError(ValueError):
     """Raised when a path would escape the configured storage root."""
+
+
+class StagingWriteError(OSError):
+    """Raised when an upload cannot be safely published into staging."""
 
 
 def normalize_profile(profile: str) -> str:
@@ -62,6 +69,190 @@ def normalize_seniority(seniority: str) -> str:
     }
     key = seniority.strip().lower()
     return seniority_mapping.get(key, seniority.strip().title())
+
+
+def sanitize_filename_component(filename: str | None) -> str:
+    """Return a safe single filename component while preserving Unicode names."""
+    raw = filename or ""
+    if (
+        not raw
+        or raw in {".", ".."}
+        or raw.startswith(".")
+        or len(raw) > 255
+        or "/" in raw
+        or "\\" in raw
+        or Path(raw).is_absolute()
+        or Path(raw).anchor
+        or PurePosixPath(raw).is_absolute()
+        or PureWindowsPath(raw).is_absolute()
+        or PureWindowsPath(raw).drive
+    ):
+        raise StoragePathError("Unsafe filename")
+    return raw
+
+
+def validate_staging_component(value: str, *, field_name: str) -> str:
+    """Validate profile/seniority values before canonicalization."""
+    raw = (value or "").strip()
+    if (
+        not raw
+        or raw in {".", ".."}
+        or "/" in raw
+        or "\\" in raw
+        or Path(raw).is_absolute()
+        or Path(raw).anchor
+        or PurePosixPath(raw).is_absolute()
+        or PureWindowsPath(raw).is_absolute()
+        or PureWindowsPath(raw).drive
+        or ":" in raw
+    ):
+        raise StoragePathError(f"Unsafe {field_name}")
+    return raw
+
+
+def _assert_single_component(component: str, *, field_name: str) -> str:
+    if (
+        not component
+        or component in {".", ".."}
+        or "/" in component
+        or "\\" in component
+        or Path(component).is_absolute()
+        or Path(component).anchor
+        or PurePosixPath(component).is_absolute()
+        or PureWindowsPath(component).is_absolute()
+        or PureWindowsPath(component).drive
+        or ":" in component
+    ):
+        raise StoragePathError(f"Unsafe canonical {field_name}")
+    return component
+
+
+def canonical_staging_profile(profile: str) -> str:
+    raw = validate_staging_component(profile, field_name="profile")
+    return _assert_single_component(normalize_profile(raw), field_name="profile")
+
+
+def canonical_staging_seniority(seniority: str) -> str:
+    raw = validate_staging_component(seniority, field_name="seniority")
+    return _assert_single_component(normalize_seniority(raw), field_name="seniority")
+
+
+def _resolve_under_staging(staging_root: Path | str, path: Path) -> Path:
+    root = Path(staging_root).resolve(strict=False)
+    resolved = path.resolve(strict=False)
+    if resolved != root and root not in resolved.parents:
+        raise StoragePathError("Path escapes staging")
+    return resolved
+
+
+def resolve_staging_upload_path(
+    *,
+    staging_root: Path | str,
+    filename: str,
+    profile: Optional[str] = None,
+    seniority: Optional[str] = None,
+) -> Path:
+    """Resolve a CV upload destination that is confined to the staging tree."""
+    safe_name = sanitize_filename_component(filename)
+    root = Path(staging_root)
+    parts: list[str] = []
+    if profile:
+        parts.append(canonical_staging_profile(profile))
+    if seniority:
+        if not profile:
+            raise StoragePathError("Seniority requires profile")
+        parts.append(canonical_staging_seniority(seniority))
+    candidate = root.joinpath(*parts, safe_name)
+    return _resolve_under_staging(root, candidate)
+
+
+def _unique_no_overwrite_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    index = 1
+    while True:
+        candidate = path.with_name(f"{path.stem} ({index}){path.suffix}")
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
+def atomic_write_staging_upload(
+    *,
+    staging_root: Path | str,
+    filename: str,
+    source: BinaryIO,
+    max_bytes: int,
+    profile: Optional[str] = None,
+    seniority: Optional[str] = None,
+    unique: bool = True,
+    chunk_size: int = 1024 * 1024,
+) -> tuple[Path, int]:
+    """Stream a CV into staging via a hidden temp file, then publish atomically."""
+    destination = resolve_staging_upload_path(
+        staging_root=staging_root,
+        filename=filename,
+        profile=profile,
+        seniority=seniority,
+    )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    root = Path(staging_root).resolve(strict=False)
+    parent = destination.parent.resolve(strict=False)
+    if parent != root and root not in parent.parents:
+        raise StoragePathError("Staging destination parent escapes staging")
+    if unique:
+        destination = _unique_no_overwrite_path(destination)
+    elif destination.exists():
+        raise FileExistsError(destination)
+
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.{uuid4().hex}.",
+        suffix=".tmp",
+        dir=destination.parent,
+    )
+    tmp_path = Path(tmp_name)
+    total = 0
+    try:
+        with os.fdopen(fd, "wb") as tmp:
+            while True:
+                chunk = source.read(chunk_size)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise StagingWriteError("Upload exceeds configured limit")
+                tmp.write(chunk)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+
+        while True:
+            destination = _resolve_under_staging(staging_root, destination)
+            try:
+                os.link(tmp_path, destination)
+                break
+            except FileExistsError:
+                if not unique:
+                    raise
+                destination = _unique_no_overwrite_path(destination)
+            except OSError:
+                if destination.exists():
+                    if not unique:
+                        raise FileExistsError(destination)
+                    destination = _unique_no_overwrite_path(destination)
+                    continue
+                os.replace(tmp_path, destination)
+                tmp_path = destination
+                break
+
+        if destination.stat().st_size != total:
+            raise StagingWriteError("Staging write size mismatch")
+        return destination, total
+    finally:
+        try:
+            if tmp_path.exists() and tmp_path != destination:
+                tmp_path.unlink()
+        except OSError:
+            pass
 
 
 class LocalCVStorage:

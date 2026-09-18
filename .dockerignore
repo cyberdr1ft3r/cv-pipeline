@@ -1,5 +1,8 @@
 # Node and build artifacts
 node_modules
+.npm-cache
+frontend_enterprise/.npm-cache
+**/.npm-cache
 frontend_enterprise/node_modules
 frontend_enterprise/.next
 **/node_modules
@@ -17,15 +20,50 @@ __pycache__
 .gitignore
 .env
 *.env
+.env.*
+**/.env
+**/.env.*
+
+# Credentials - never bake a Google service-account key into the image.
+# The key is mounted read-only at runtime, never copied at build time.
+*service-account*.json
+**/*service-account*.json
+*service_account*.json
+**/*service_account*.json
+secrets
+.local-secrets
+**/.local-secrets
 
 # Local data and logs
 data
 logs
 *.log
+/storage
+/storage/**
+runtime
+tmp
+.tmp
+**/.tmp
 
 # Docker
 docker-compose.override.yml
 Dockerfile
+compose*.yml
+docker-compose*.yml
+deploy
+
+# Test and forensic artifacts
+.pytest_cache
+htmlcov
+coverage
+.coverage
+test_runs
+test-results
+*.tar
+*.tar.gz
+*.zip
+cv-pipeline-prod-*
+vps-ready-security-ingestion-boundary*
 
 # OS files
 .DS_Store

@@ -42,7 +42,14 @@ from service.config import (
 from service.job_store import get_job, init_db, update_job, create_job_unless_active, fail_stale_jobs
 from service.models import JobCreateResponse, JobStatusResponse, PipelineArtifacts, PipelineJob
 from service.runner import create_job_workspace, start_job_thread, start_phase_thread
-from service.cv_storage import normalize_profile
+from service.cv_storage import (
+    StagingWriteError,
+    StoragePathError,
+    atomic_write_staging_upload,
+    normalize_profile,
+    resolve_staging_upload_path,
+    sanitize_filename_component,
+)
 from service.google_drive_import import (
     GoogleDriveImportError,
     dedupe_files,
@@ -58,6 +65,30 @@ from service.cv_alignment import (
     resolve_alignment_download,
     write_alignment_status,
 )
+
+
+_TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+_FALSE_ENV_VALUES = frozenset({"0", "false", "no", "off"})
+
+
+def _read_bool_env(name: str, *, default: bool) -> bool:
+    """Read a boolean environment variable without truthy-string surprises."""
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+
+    value = raw_value.strip().lower()
+    if value in _TRUE_ENV_VALUES:
+        return True
+    if value in _FALSE_ENV_VALUES:
+        return False
+    raise RuntimeError(
+        f"{name} must be one of: "
+        f"{', '.join(sorted(_TRUE_ENV_VALUES | _FALSE_ENV_VALUES))}"
+    )
+
+
+COOKIE_SECURE = _read_bool_env("COOKIE_SECURE", default=False)
 
 # Security & Logging Modules
 
@@ -110,6 +141,7 @@ def calculate_job_progress(stage: str, status: str) -> dict[str, int]:
 from service.security import (
     verify_token, TokenPayload, create_access_token,
     verify_password, hash_password, SECRET_KEY_VALID,
+    ACCESS_TOKEN_EXPIRE_SECONDS, SESSION_RENEW_THRESHOLD_SECONDS,
 )
 from service.user_store import (
     get_user_by_email, get_user_by_email_any, get_user_by_id, update_last_login, get_sourcers,
@@ -361,6 +393,19 @@ async def get_current_user(
     if not payload:
         security_logger.warning("Invalid or expired JWT token presented")
         raise HTTPException(status_code=401, detail="Token invalide ou expirÃ©")
+    try:
+        user = get_user_by_id(payload.sub)
+    except Exception as exc:
+        security_logger.error("User state recheck failed for %s: %s", payload.sub, exc)
+        raise HTTPException(status_code=503, detail="Authentification temporairement indisponible") from exc
+    if not user or not user.is_active:
+        security_logger.warning("JWT presented for inactive or missing user: %s", payload.sub)
+        raise HTTPException(status_code=401, detail="Utilisateur introuvable ou inactif")
+    if user.deleted_at is not None:
+        security_logger.warning("JWT presented for deleted user: %s", payload.sub)
+        raise HTTPException(status_code=401, detail="Utilisateur introuvable ou inactif")
+    payload.role = user.role
+    payload.email = user.email
     app_logger.info(f"User authenticated: {payload.sub} role={payload.role}")
     return payload
 
@@ -461,16 +506,9 @@ def _validate_job_id(job_id: str) -> None:
 def _safe_upload_filename(filename: Optional[str]) -> str:
     """S-CRIT-3 C/D: strip any directory component and reject unsafe names so an
     uploaded filename can never escape its target directory."""
-    raw = filename or ""
-    safe = Path(raw).name
-    if (
-        not safe
-        or safe != raw            # contained a path component / separator
-        or safe.startswith(".")
-        or len(safe) > 255
-        or "/" in safe
-        or "\\" in safe
-    ):
+    try:
+        safe = sanitize_filename_component(filename)
+    except StoragePathError:
         raise HTTPException(status_code=400, detail="Nom de fichier invalide")
     return safe
 
@@ -507,6 +545,41 @@ def _write_upload(upload: UploadFile, target_dir: Path) -> Path:
         f.write(content)
     
     return file_path
+
+
+def _job_access_denied() -> None:
+    raise HTTPException(status_code=404, detail="job not found")
+
+
+def _current_user_can_access_job(job: PipelineJob, current_user: TokenPayload) -> bool:
+    if current_user.role == "admin":
+        return True
+    if job.created_by and str(job.created_by) == current_user.sub:
+        return True
+    if job.offer_id:
+        offer = get_offer_by_id(job.offer_id)
+        if not offer:
+            return False
+        if current_user.role == "recruiter" and str(offer.created_by) == current_user.sub:
+            return True
+        if current_user.role == "sourcer" and str(offer.assigned_to) == current_user.sub:
+            return True
+    return False
+
+
+def _get_accessible_job(job_id: str, current_user: TokenPayload) -> PipelineJob:
+    _validate_job_id(job_id)
+    job = get_job(job_id)
+    if not job or not _current_user_can_access_job(job, current_user):
+        _job_access_denied()
+    return job
+
+
+def _assert_session_access(session_id: str, current_user: TokenPayload) -> PipelineJob:
+    job = get_job_by_session_id(session_id)
+    if not job or not _current_user_can_access_job(job, current_user):
+        raise HTTPException(status_code=404, detail="Session introuvable")
+    return job
 
 
 def _persist_tests_upload(job: PipelineJob, tests_path: Path) -> Path:
@@ -618,6 +691,8 @@ def create_job(
     # S-CRIT-3 A: reject malformed session ids before they reach the filesystem.
     reuse_session_id = _validate_session_id(reuse_session_id)
     preset_session_id = _validate_session_id(preset_session_id)
+    if reuse_session_id:
+        _assert_session_access(reuse_session_id, current_user)
 
     # Fix 2 (Action 220): when launching from an assigned offer, the session_id and
     # offer file path are taken authoritatively from the DB â€” never generate a new
@@ -844,7 +919,10 @@ def create_job(
 
 
 @app.get("/api/v1/sessions")
-async def list_sessions(request: Request) -> dict:
+async def list_sessions(
+    request: Request,
+    current_user: TokenPayload = Depends(get_current_user),
+) -> dict:
     """List available CV extraction sessions for reuse."""
     check_rate_limit(request)
     
@@ -868,6 +946,10 @@ async def list_sessions(request: Request) -> dict:
                         created_date = datetime.utcnow().isoformat()
                     
                     if cv_count > 0:
+                        if current_user.role != "admin":
+                            session_job = get_job_by_session_id(session_id)
+                            if not session_job or not _current_user_can_access_job(session_job, current_user):
+                                continue
                         sessions.append({
                             "session_id": session_id,
                             "created_date": created_date,
@@ -894,19 +976,22 @@ async def get_job_status(
     check_rate_limit(request)
     _validate_job_id(job_id)
 
-    job = get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="job not found")
+    job = _get_accessible_job(job_id, current_user)
 
     progress = calculate_job_progress(job.stage, job.status)
     return JobStatusResponse(job=job, artifacts=job.artifacts.dict(), progress=progress)
 
 
 @app.get("/api/v1/jobs/{job_id}/logs")
-async def get_job_logs(request: Request, job_id: str, tail: int | None = None):
+async def get_job_logs(
+    request: Request,
+    job_id: str,
+    tail: int | None = None,
+    current_user: TokenPayload = Depends(get_current_user),
+):
     """Get logs for a deployment job."""
     check_rate_limit(request)
-    _validate_job_id(job_id)  # S-CRIT-3 B (public endpoint, still builds an FS path)
+    _get_accessible_job(job_id, current_user)
 
     job_dir = API_JOBS_DIR / job_id
     logs_dir = job_dir / "logs"
@@ -930,14 +1015,14 @@ async def get_job_logs(request: Request, job_id: str, tail: int | None = None):
 
 
 @app.get("/api/v1/jobs/{job_id}/progress")
-async def get_job_progress(request: Request, job_id: str):
+async def get_job_progress(
+    request: Request,
+    job_id: str,
+    current_user: TokenPayload = Depends(get_current_user),
+):
     """Get real-time progress based on log analysis."""
     check_rate_limit(request)
-    _validate_job_id(job_id)  # S-CRIT-3 B (public endpoint, still builds an FS path)
-
-    job = get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="job not found")
+    job = _get_accessible_job(job_id, current_user)
 
     job_dir = API_JOBS_DIR / job_id
     stdout_path = job_dir / "logs" / "pipeline_stdout.log"
@@ -1055,11 +1140,7 @@ async def get_job_results(
 ):
     """Get results of a completed job."""
     check_rate_limit(request)
-    _validate_job_id(job_id)
-    
-    job = get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="job not found")
+    job = _get_accessible_job(job_id, current_user)
     return JSONResponse(
         {
             "job_id": job.job_id,
@@ -1197,11 +1278,7 @@ async def get_matching_results(
 ):
     """Get matching results for a job."""
     check_rate_limit(request)
-    _validate_job_id(job_id)
-    
-    job = get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="job not found")
+    job = _get_accessible_job(job_id, current_user)
     session_id = job.session_id
     match_path = _resolve_matching_result_path(session_id)
     if not match_path:
@@ -1288,11 +1365,7 @@ async def get_final_table(
 ):
     """Get final scoring table for a job."""
     check_rate_limit(request)
-    _validate_job_id(job_id)
-    
-    job = get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="job not found")
+    job = _get_accessible_job(job_id, current_user)
     session_id = job.session_id
     final_path = _resolve_final_result_path(session_id)
     if not final_path:
@@ -1317,7 +1390,7 @@ async def run_final_phase(
     or malformed body as "no file" and proceed normally.
     """
     check_rate_limit(request)
-    _validate_job_id(job_id)
+    job = _get_accessible_job(job_id, current_user)
 
     tests_file: UploadFile | None = None
     candidates_raw: str | None = None
@@ -1332,10 +1405,6 @@ async def run_final_phase(
         except Exception as exc:
             app_logger.warning(f"Final phase form parse failed for {job_id}: {exc}")
             tests_file = None
-
-    job = get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="job not found")
 
     selected: list[str] | None = None
     if candidates_raw:
@@ -1391,11 +1460,7 @@ async def run_format_phase(
     that the runner passes to the CV generator; the ``limit`` is cleared in that case.
     """
     check_rate_limit(request)
-    _validate_job_id(job_id)
-
-    job = get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="job not found")
+    job = _get_accessible_job(job_id, current_user)
 
     # Parse an optional manual candidate selection.
     selected: list[str] | None = None
@@ -1446,10 +1511,7 @@ async def list_formatted_candidates(
 ):
     """List candidate names whose CV was actually formatted (from formatted_cv/ output)."""
     check_rate_limit(request)
-    _validate_job_id(job_id)
-    job = get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="job not found")
+    job = _get_accessible_job(job_id, current_user)
     session_id = job.session_id
     if not session_id:
         return {"candidates": []}
@@ -1465,11 +1527,7 @@ async def download_artifact(
 ):
     """Download processing artifacts."""
     check_rate_limit(request)
-    _validate_job_id(job_id)
-    
-    job = get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="job not found")
+    job = _get_accessible_job(job_id, current_user)
 
     session_id = job.session_id
 
@@ -1575,21 +1633,76 @@ async def auth_login(body: _LoginRequest, response: Response):
         actor_name=user.full_name,
     )
 
-    response.set_cookie(
-        key="access_token",
-        value=token,
-        httponly=True,
-        samesite="lax",
-        secure=False,   # set True in production behind HTTPS
-        max_age=1800,   # 30 minutes
-        path="/",       # explicit â€” ensures cookie is sent for all API paths
-    )
+    _set_access_token_cookie(response, token)
     security_logger.info(f"Successful login: {user.email} role={user.role}")
     return {
         "user_id": str(user.id),
         "email": user.email,
         "full_name": user.full_name,
         "role": user.role,
+    }
+
+
+def _set_access_token_cookie(response: Response, token: str) -> None:
+    """Write the session cookie.
+
+    Max-Age is derived from ACCESS_TOKEN_EXPIRE_SECONDS rather than a separate
+    literal so the cookie and the JWT inside it can never drift apart. Shared by
+    login and renewal so the two paths cannot diverge in their security
+    attributes either.
+
+    path="/" is explicit: it keeps the cookie on every API path and, just as
+    importantly, stops a second access_token cookie being created at a narrower
+    path that would shadow this one.
+    """
+    response.set_cookie(
+        key="access_token",
+        value=token,
+        httponly=True,
+        samesite="lax",
+        secure=COOKIE_SECURE,
+        max_age=ACCESS_TOKEN_EXPIRE_SECONDS,
+        path="/",
+    )
+
+
+@app.post("/api/v1/auth/renew")
+async def auth_renew(
+    response: Response,
+    current_user: TokenPayload = Depends(get_current_user),
+):
+    """Issue a fresh access token for an already-authenticated session.
+
+    This is what makes the session sliding: an active user is re-credentialed
+    before the 30-minute token expires, while an idle user still expires
+    normally because nothing calls this.
+
+    It is deliberately not a refresh-token endpoint. It requires a currently
+    valid access token, so it cannot resurrect an expired or revoked session,
+    and get_current_user re-reads the user on every call, so a deactivated or
+    deleted account is rejected here exactly as it is everywhere else.
+
+    The new token carries the role read from the database, not the role from the
+    old token, so a role change takes effect on the next renewal instead of
+    persisting until the user happens to log out.
+    """
+    token = create_access_token(
+        {
+            "sub": current_user.sub,
+            "role": current_user.role,
+            "email": current_user.email,
+        }
+    )
+    _set_access_token_cookie(response, token)
+    security_logger.info(
+        "Session renewed: %s role=%s", current_user.email, current_user.role
+    )
+    return {
+        "user_id": current_user.sub,
+        "email": current_user.email,
+        "role": current_user.role,
+        "expires_in": ACCESS_TOKEN_EXPIRE_SECONDS,
+        "renew_after": ACCESS_TOKEN_EXPIRE_SECONDS - SESSION_RENEW_THRESHOLD_SECONDS,
     }
 
 
@@ -2692,17 +2805,15 @@ class _GoogleDriveImportRequest(PydanticBaseModel):
 
 
 def _staging_target_path(filename: str, profile: Optional[str], seniority: Optional[str]) -> Path:
-    normalized_profile = normalize_profile(profile) if profile else None
-    normalized_seniority = seniority.lower().capitalize() if seniority else None
-
-    if normalized_profile and normalized_seniority:
-        staging_dir = f"{_WATCHER_STAGING_PATH}/{normalized_profile}/{normalized_seniority}"
-    elif normalized_profile:
-        staging_dir = f"{_WATCHER_STAGING_PATH}/{normalized_profile}"
-    else:
-        staging_dir = _WATCHER_STAGING_PATH
-
-    return Path(staging_dir) / filename
+    try:
+        return resolve_staging_upload_path(
+            staging_root=Path(_WATCHER_STAGING_PATH),
+            filename=_safe_upload_filename(filename),
+            profile=profile,
+            seniority=seniority,
+        )
+    except StoragePathError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _unique_staging_path(path: Path) -> Path:
@@ -2724,6 +2835,7 @@ def _write_staging_cv_bytes(
     seniority: Optional[str],
     unique: bool = False,
 ) -> Path:
+    filename = _safe_upload_filename(filename)
     ext = Path(filename).suffix.lower()
     if ext not in _VALID_EXTENSIONS:
         raise HTTPException(
@@ -2740,17 +2852,22 @@ def _write_staging_cv_bytes(
     if len(content) > _MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="Fichier trop volumineux (maximum 10 Mo).")
 
-    mount_path = _staging_target_path(filename, profile, seniority)
-    if unique:
-        mount_path = _unique_staging_path(mount_path)
-
     try:
-        mount_path.parent.mkdir(parents=True, exist_ok=True)
-        mount_path.write_bytes(content)
-        if mount_path.stat().st_size != len(content):
-            raise OSError("staging write size mismatch")
+        mount_path, _ = atomic_write_staging_upload(
+            staging_root=Path(_WATCHER_STAGING_PATH),
+            filename=filename,
+            source=io.BytesIO(content),
+            max_bytes=_MAX_UPLOAD_BYTES,
+            profile=profile,
+            seniority=seniority,
+            unique=unique,
+        )
+    except StoragePathError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except StagingWriteError as exc:
+        raise HTTPException(status_code=413, detail="Fichier trop volumineux (maximum 10 Mo).") from exc
     except OSError as exc:
-        app_logger.warning("Staging local write unavailable path=%s err=%s", mount_path, exc)
+        app_logger.warning("Staging local write unavailable filename=%s err=%s", filename, exc)
         raise HTTPException(status_code=503, detail="Stockage staging local inaccessible.") from exc
 
     return mount_path
@@ -2785,11 +2902,29 @@ async def get_staging_seniorities(
 
 
 @app.post("/api/v1/staging/google-drive/import")
-async def import_google_drive_cvs(
+def import_google_drive_cvs(
     body: _GoogleDriveImportRequest,
     current_user: TokenPayload = Depends(get_current_user),
 ):
-    """Import CV PDFs/DOCX/DOC files from Google Drive into the local staging folder."""
+    """Import CV PDFs/DOCX/DOC files from Google Drive into the local staging folder.
+
+    Deliberately a plain `def`, not `async def`.
+
+    Every Drive call underneath this - metadata, folder listing, each file
+    download - goes through service.google_drive_import, which uses blocking
+    urllib. Declared `async`, that blocking I/O ran directly on the event loop,
+    so a single Drive import (one measured at ~53 seconds) stalled every other
+    request the API was serving.
+
+    As a sync endpoint, FastAPI runs it in its worker threadpool instead, and
+    the event loop stays free. There is no `await` in the body, so this is a
+    declaration change only: route, request schema, RBAC, the 50/100
+    interactive limits, staging writes and the service-account auth path are all
+    untouched.
+
+    If this handler ever gains genuinely async work, move that work out rather
+    than restoring `async def` around the blocking importer.
+    """
     if body.seniority and not body.profile:
         raise HTTPException(status_code=400, detail="La seniorite ne peut pas etre definie sans un profil.")
     if body.seniority and body.seniority.lower() not in _VALID_SENIORITIES:
@@ -3077,7 +3212,6 @@ async def staging_upload(
     current_user: TokenPayload = Depends(get_current_user),
 ):
     """Upload one CV file to the SFTP staging folder. Called once per file for per-file progress."""
-    # â”€â”€ Validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     filename = _safe_upload_filename(file.filename)  # S-CRIT-3 D
     ext = Path(filename).suffix.lower()
     if ext not in _VALID_EXTENSIONS:
@@ -3096,34 +3230,25 @@ async def staging_upload(
     if seniority and seniority.lower() not in _VALID_SENIORITIES:
         raise HTTPException(status_code=400, detail=f"SÃ©nioritÃ© inconnue : {seniority}")
 
-    content = await file.read()
-    if len(content) > _MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="Fichier trop volumineux (maximum 10 Mo).")
-
-    # â”€â”€ Determine SFTP target path â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    normalized_profile = normalize_profile(profile) if profile else None
-    normalized_seniority = seniority.lower().capitalize() if seniority else None
-
-    if normalized_profile and normalized_seniority:
-        staging_dir = f"{_WATCHER_STAGING_PATH}/{normalized_profile}/{normalized_seniority}"
-    elif normalized_profile:
-        staging_dir = f"{_WATCHER_STAGING_PATH}/{normalized_profile}"
-    else:
-        staging_dir = _WATCHER_STAGING_PATH
-
-    remote_path = f"{staging_dir}/{filename}"
-
-    mount_path = Path(remote_path)
     try:
-        mount_path.parent.mkdir(parents=True, exist_ok=True)
-        mount_path.write_bytes(content)
-        if mount_path.stat().st_size != len(content):
-            raise OSError("staging write size mismatch")
+        mount_path, _ = atomic_write_staging_upload(
+            staging_root=Path(_WATCHER_STAGING_PATH),
+            filename=filename,
+            source=file.file,
+            max_bytes=_MAX_UPLOAD_BYTES,
+            profile=profile,
+            seniority=seniority,
+            unique=True,
+        )
+    except StoragePathError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except StagingWriteError as exc:
+        raise HTTPException(status_code=413, detail="Fichier trop volumineux (maximum 10 Mo).") from exc
     except OSError as exc:
-        app_logger.warning("Staging local write unavailable path=%s err=%s", mount_path, exc)
+        app_logger.warning("Staging local write unavailable filename=%s err=%s", filename, exc)
         raise HTTPException(status_code=503, detail="Stockage staging local inaccessible.") from exc
 
-    return {"filename": filename, "staging_path": remote_path, "status": "uploaded"}
+    return {"filename": mount_path.name, "staging_path": str(mount_path), "status": "uploaded"}
 
 
 # ============================================================================

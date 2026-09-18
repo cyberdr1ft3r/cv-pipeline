@@ -50,11 +50,10 @@ class OpenRouterLLM:
         self.retry_wait_seconds = retry_wait_seconds
         self.max_retries = max_retries
         
-        # Initialize OpenAI client with httpx (verify=False for SSL bypass)
+        # Use the platform trust store and normal TLS certificate validation.
         self.client = OpenAI(
             base_url=self.base_url,
             api_key=api_key,
-            http_client=httpx.Client(verify=False)
         )
         
         # Rate limiting

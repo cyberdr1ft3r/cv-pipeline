@@ -15,6 +15,10 @@ credentials/
 *_key.txt
 *_token.txt
 *_secret.txt
+# Google service-account keys must never be committed.
+*service-account*.json
+*service_account*.json
+!deploy/service-account.placeholder.json
 
 # Configuration overrides with sensitive data
 config.local.yaml
@@ -55,7 +59,7 @@ dist/
 
 # Node.js
 node_modules/
-package-lock.json
+.npm-cache/
 yarn.lock
 
 # Media (demo videos)
@@ -98,7 +102,16 @@ Capture d'écran*.png
 requirements_fixed.txt
 script/chatbot/requirements_fixed.txt
 script/chatbot/web_backup/
-package-lock.json
+
+# Deployment and forensic artifacts
+/package-lock.json
+/cv-pipeline-prod-*.tar.gz
+/vps-ready-security-ingestion-boundary/
+/.tmp/
+/storage/
+/logs/
+/deploy/.deployed-version
+/deploy/.previous-version
 
 # Generated AI assistance outputs
 AI_Assistance/transformed_sessions/
@@ -107,3 +120,4 @@ AI_Assistance/transformed_sessions/
 *.md
 !README.md
 !CHANGELOG.md
+!deploy/README.md

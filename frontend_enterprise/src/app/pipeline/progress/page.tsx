@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { AlertCircle, BarChart3, Check, Download, Eye, Loader2 } from 'lucide-react';
 import { PipelineShell } from '@/app/components/pipeline/PipelineShell';
@@ -58,7 +58,7 @@ function CompletionIcon() {
   );
 }
 
-export default function PipelineProgressPage() {
+function PipelineProgressContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const jobId = searchParams.get('jobId');
@@ -445,4 +445,8 @@ export default function PipelineProgressPage() {
       </div>
     </PipelineShell>
   );
+}
+
+export default function PipelineProgressPage() {
+  return <Suspense fallback={null}><PipelineProgressContent /></Suspense>;
 }
