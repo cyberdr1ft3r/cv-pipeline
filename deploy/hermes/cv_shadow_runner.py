@@ -19,7 +19,7 @@ from docx import Document
 from pypdf import PdfReader
 
 
-INPUT_ROOT = Path("/input")
+INPUT_ROOT = Path(os.getenv("HERMES_EVAL_INPUT_ROOT", "/input"))
 OUTPUT_ROOT = Path("/output")
 PROMPT_PATH = Path("/app/config/prompts/extraction_prompt.txt")
 
