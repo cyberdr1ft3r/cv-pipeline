@@ -1,0 +1,55 @@
+services:
+  hermes-cv:
+    image: nousresearch/hermes-agent:v2026.9.14
+    container_name: cv-pipeline-hermes
+    restart: unless-stopped
+    profiles: ["hermes-lab"]
+    command: ["gateway", "run"]
+    environment:
+      API_SERVER_ENABLED: "true"
+      API_SERVER_HOST: "0.0.0.0"
+      API_SERVER_PORT: "8642"
+      API_SERVER_KEY: ${HERMES_API_SERVER_KEY:?Set HERMES_API_SERVER_KEY}
+      API_SERVER_MODEL_NAME: "cv-ingest-hermes"
+    volumes:
+      - ./.hermes-cv:/opt/data
+    ports:
+      - "127.0.0.1:${HERMES_HOST_PORT:-8642}:8642"
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8642/health', timeout=3).read()\""
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+    networks: [app]
+
+  hermes-cv-runner:
+    image: dr1f73r/cv-pipeline-api:${CV_PIPELINE_VERSION:?Set CV_PIPELINE_VERSION}
+    container_name: cv-pipeline-hermes-runner
+    profiles: ["hermes-lab"]
+    depends_on:
+      hermes-cv:
+        condition: service_healthy
+    environment:
+      HERMES_BASE_URL: "http://hermes-cv:8642/v1"
+      HERMES_API_SERVER_KEY: ${HERMES_API_SERVER_KEY:?Set HERMES_API_SERVER_KEY}
+      HERMES_EVAL_INPUT_ROOT: "/sftp/cv_tech/files/staging"
+      HERMES_EVAL_LIMIT: ${HERMES_EVAL_LIMIT:-1}
+      HERMES_EVAL_FILE: ${HERMES_EVAL_FILE:-}
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - cv_storage:/sftp/cv_tech/files:ro
+      - ./.hermes-cv/eval:/output
+      - ./deploy/hermes:/lab:ro
+      - ./config:/app/config:ro
+    command: ["python", "/lab/cv_shadow_runner.py"]
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    networks: [app]
