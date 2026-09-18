@@ -107,3 +107,8 @@ AI_Assistance/transformed_sessions/
 *.md
 !README.md
 !CHANGELOG.md
+
+
+# Hermes CV lab - contains OAuth tokens, API config and session state
+.hermes-cv/
+deploy/hermes/.env

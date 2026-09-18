@@ -1,0 +1,89 @@
+volumes:
+  # Read-only shadow mount of the existing staging share. The production watcher
+  # is not modified and this lab never moves/deletes files from staging.
+  hermes_staging_lab:
+    driver: vieux/sshfs
+    driver_opts:
+      sshcmd: "cv_tech_sftp@82.25.119.163:/sftp/cv_tech/files/staging"
+      port: "22"
+      password: "${SFTP_PASSWORD}"
+      allow_other: ""
+      nonempty: ""
+      reconnect: ""
+      ServerAliveInterval: "10"
+      ServerAliveCountMax: "3"
+
+services:
+  hermes-cv:
+    image: nousresearch/hermes-agent:v2026.9.14
+    container_name: cv_pipeline_hermes
+    restart: unless-stopped
+    command: gateway run
+    profiles:
+      - hermes-lab
+
+    environment:
+      API_SERVER_ENABLED: "true"
+      API_SERVER_HOST: "0.0.0.0"
+      API_SERVER_PORT: "8642"
+      API_SERVER_KEY: ${HERMES_API_SERVER_KEY:?Set HERMES_API_SERVER_KEY in deploy/hermes/.env}
+      API_SERVER_MODEL_NAME: "cv-ingest-hermes"
+
+    volumes:
+      # Persistent Hermes config + OAuth tokens. Never commit this directory.
+      - ./.hermes-cv:/opt/data
+
+    # Lab endpoint is host-local only. Other containers on cvs_project_network
+    # can reach Hermes at http://hermes-cv:8642/v1.
+    ports:
+      - "127.0.0.1:${HERMES_HOST_PORT:-8642}:8642"
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8642/health', timeout=3).read()\""
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+    security_opt:
+      - no-new-privileges:true
+
+    networks:
+      - cvs_project_network
+
+  # One-shot shadow evaluator. It reads staged CVs, sends extracted text to
+  # Hermes, and writes results only under .hermes-cv/eval/. It never calls the
+  # production watcher, DB, or CV_Theque.
+  hermes-cv-runner:
+    build:
+      context: .
+      dockerfile: service/Dockerfile
+    container_name: cv_pipeline_hermes_runner
+    profiles:
+      - hermes-lab
+    depends_on:
+      hermes-cv:
+        condition: service_healthy
+
+    environment:
+      HERMES_BASE_URL: "http://hermes-cv:8642/v1"
+      HERMES_API_SERVER_KEY: ${HERMES_API_SERVER_KEY:?Set HERMES_API_SERVER_KEY in deploy/hermes/.env}
+      HERMES_EVAL_LIMIT: ${HERMES_EVAL_LIMIT:-5}
+      HERMES_EVAL_FILE: ${HERMES_EVAL_FILE:-}
+
+    volumes:
+      - hermes_staging_lab:/input:ro
+      - ./.hermes-cv/eval:/output
+      - ./deploy/hermes:/lab:ro
+      - ./config:/app/config:ro
+
+    command: python /lab/cv_shadow_runner.py
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - cvs_project_network

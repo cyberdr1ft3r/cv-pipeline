@@ -1,0 +1,52 @@
+# Hermes CV ingestion lab configuration.
+# Copy this file to .hermes-cv/config.yaml before first start.
+#
+# The provider/model are finalized by running:
+#   docker compose --env-file deploy/hermes/.env \
+#     -f docker-compose.yml -f docker-compose.hermes.yml \
+#     run --rm --user 10000:10000 hermes-cv model
+#
+# Choose "ChatGPT or Codex Subscription" and a model that the account reports
+# as entitled. OAuth credentials are stored separately in .hermes-cv/auth.json.
+
+model:
+  provider: openai-codex
+
+gateway:
+  api_server:
+    enabled: true
+    host: 0.0.0.0
+    port: 8642
+    model_name: cv-ingest-hermes
+    # Start deliberately serial for quota/latency measurement.
+    max_concurrent_runs: 1
+
+# CVs are untrusted input. The API-server profile must not receive agent tools.
+# An explicit empty API-server list is authoritative in current Hermes releases.
+platform_toolsets:
+  api_server: []
+
+# Belt-and-suspenders global suppression. These remain disabled even if a later
+# Hermes migration or interactive config tries to add them back.
+agent:
+  disabled_toolsets:
+    - browser
+    - code_execution
+    - computer_use
+    - connections
+    - cronjob
+    - delegation
+    - file
+    - homeassistant
+    - image_gen
+    - memory
+    - search
+    - session_search
+    - skills
+    - terminal
+    - todo
+    - tts
+    - video
+    - vision
+    - web
+    - x_search
