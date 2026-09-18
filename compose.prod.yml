@@ -78,6 +78,7 @@ services:
     networks: [app, database]
 
   watcher:
+    profiles: ["watcher"]
     image: dr1f73r/cv-pipeline-api:${CV_PIPELINE_VERSION:?Set CV_PIPELINE_VERSION}
     restart: unless-stopped
     depends_on:

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -13,17 +17,74 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DeploymentSecurityTests(unittest.TestCase):
-    def test_watcher_is_required_in_normal_production_stack(self) -> None:
+    def test_watcher_is_profiled_but_configuration_is_preserved(self) -> None:
         compose = yaml.safe_load((ROOT / "compose.prod.yml").read_text(encoding="utf-8"))
         watcher = compose["services"]["watcher"]
+        api = compose["services"]["api"]
 
-        self.assertNotIn("profiles", watcher)
+        self.assertEqual(watcher["profiles"], ["watcher"])
+        self.assertEqual(watcher["image"], api["image"])
+        self.assertEqual(watcher["restart"], "unless-stopped")
         self.assertEqual(watcher["command"], ["python", "-m", "script.staging_watcher"])
+        self.assertIn("environment", watcher)
+        self.assertEqual(
+            watcher["environment"]["CV_STORAGE_ROOT"],
+            "/sftp/cv_tech/files",
+        )
+        self.assertEqual(
+            watcher["environment"]["WATCHER_STAGING_PATH"],
+            "/sftp/cv_tech/files/staging",
+        )
+        self.assertEqual(
+            watcher["environment"]["OPENROUTER_API_KEY"],
+            "${OPENROUTER_API_KEY:?Set OPENROUTER_API_KEY}",
+        )
+        self.assertIn("cv_storage:/sftp/cv_tech/files", watcher["volumes"])
+        self.assertIn("./config:/app/config:ro", watcher["volumes"])
         self.assertIn("healthcheck", watcher)
+        self.assertEqual(watcher["healthcheck"]["test"], ["CMD-SHELL", "kill -0 1"])
+        self.assertIn("postgres", watcher["depends_on"])
+        self.assertIn("api", watcher["depends_on"])
 
+    def test_deploy_script_defaults_to_core_services_and_stops_watcher(self) -> None:
         deploy_script = (ROOT / "deploy" / "deploy.sh").read_text(encoding="utf-8")
-        self.assertIn("for service in postgres api watcher frontend proxy", deploy_script)
+
+        self.assertIn("DEPLOY_WATCHER=${DEPLOY_WATCHER:-0}", deploy_script)
+        self.assertIn(
+            'DEPLOY_SERVICES="postgres api frontend proxy"',
+            deploy_script,
+        )
+        self.assertIn(
+            "compose_base --profile watcher stop watcher",
+            deploy_script,
+        )
+        self.assertIn("for service in $REQUIRED_SERVICES", deploy_script)
         self.assertIn(".State.Restarting", deploy_script)
+
+    def test_explicit_watcher_mode_activates_profile_and_service(self) -> None:
+        deploy_script = (ROOT / "deploy" / "deploy.sh").read_text(encoding="utf-8")
+
+        self.assertIn('if [ "$DEPLOY_WATCHER" = "1" ]; then', deploy_script)
+        self.assertIn("compose_base --profile watcher", deploy_script)
+        self.assertIn(
+            'DEPLOY_SERVICES="postgres api watcher frontend proxy"',
+            deploy_script,
+        )
+        self.assertIn(
+            "compose up -d --remove-orphans $DEPLOY_SERVICES",
+            deploy_script,
+        )
+
+    def test_rollback_preserves_recorded_watcher_mode(self) -> None:
+        deploy_script = (ROOT / "deploy" / "deploy.sh").read_text(encoding="utf-8")
+        rollback_script = (ROOT / "deploy" / "rollback.sh").read_text(encoding="utf-8")
+
+        self.assertIn(
+            'printf \'%s\\n\' "$DEPLOY_WATCHER" > "$WATCHER_MODE_FILE"',
+            deploy_script,
+        )
+        self.assertIn('DEPLOY_WATCHER=$(tr -d \'\\r\\n\'', rollback_script)
+        self.assertIn("export DEPLOY_WATCHER", rollback_script)
 
     def test_cookie_security_is_explicit_per_environment(self) -> None:
         prod = yaml.safe_load((ROOT / "compose.prod.yml").read_text(encoding="utf-8"))
@@ -96,6 +157,173 @@ class DeploymentSecurityTests(unittest.TestCase):
         self.assertIn("--proxy-headers", api["command"])
         self.assertIn("--forwarded-allow-ips=*", api["command"])
         self.assertEqual(proxy["ports"], ["${HTTP_BIND_ADDRESS:-127.0.0.1}:${HTTP_PORT:-8080}:80"])
+
+
+class DeploymentScriptModeTests(unittest.TestCase):
+    def _run_deploy(
+        self,
+        watcher_mode: str,
+        *,
+        health_ok: bool = True,
+        current_version: str | None = None,
+    ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        deploy_dir = root / "deploy"
+        deploy_dir.mkdir()
+        shutil.copy2(ROOT / "deploy" / "deploy.sh", deploy_dir / "deploy.sh")
+        shutil.copy2(ROOT / "deploy" / "healthcheck.sh", deploy_dir / "healthcheck.sh")
+        shutil.copy2(ROOT / "compose.prod.yml", root / "compose.prod.yml")
+        (deploy_dir / ".env.prod").write_text("", encoding="utf-8")
+        if current_version is not None:
+            (deploy_dir / ".deployed-version").write_text(
+                current_version + "\n",
+                encoding="utf-8",
+            )
+
+        fake_bin = root / "fake-bin"
+        fake_bin.mkdir()
+        docker_log = root / "docker.log"
+        docker = fake_bin / "docker"
+        docker.write_text(
+            """#!/usr/bin/env sh
+printf '%s\\n' "$*" >> "$DOCKER_LOG"
+if [ "$1" = "inspect" ]; then
+  echo "running false healthy"
+  exit 0
+fi
+last=""
+for argument in "$@"; do
+  last=$argument
+done
+case " $* " in
+  *" ps -q "*) echo "cid-$last" ;;
+  *" port proxy 80 "*) echo "127.0.0.1:8080" ;;
+esac
+exit 0
+""",
+            encoding="utf-8",
+        )
+        curl = fake_bin / "curl"
+        curl.write_text(
+            """#!/usr/bin/env sh
+exit "${FAKE_HEALTH_EXIT:-0}"
+""",
+            encoding="utf-8",
+        )
+        sleep = fake_bin / "sleep"
+        sleep.write_text("#!/usr/bin/env sh\nexit 0\n", encoding="utf-8")
+        for executable in (docker, curl, sleep, deploy_dir / "deploy.sh", deploy_dir / "healthcheck.sh"):
+            executable.chmod(0o755)
+
+        env = os.environ.copy()
+        env.update(
+            {
+                "PATH": f"{fake_bin}:{env['PATH']}",
+                "DOCKER_LOG": str(docker_log),
+                "DEPLOY_WATCHER": watcher_mode,
+                "HEALTHCHECK_ATTEMPTS": "1",
+                "FAKE_HEALTH_EXIT": "0" if health_ok else "1",
+            }
+        )
+        result = subprocess.run(
+            [str(deploy_dir / "deploy.sh"), "test-version"],
+            cwd=root,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        lines = (
+            docker_log.read_text(encoding="utf-8").splitlines()
+            if docker_log.exists()
+            else []
+        )
+        return result, lines
+
+    @staticmethod
+    def _commands(lines: list[str], fragment: str) -> list[str]:
+        return [line for line in lines if fragment in f" {line} "]
+
+    def test_default_mode_stops_watcher_and_targets_only_core_services(self) -> None:
+        result, lines = self._run_deploy("0")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        stop_commands = self._commands(lines, " stop watcher ")
+        self.assertEqual(len(stop_commands), 1)
+        self.assertIn("--profile watcher", stop_commands[0])
+
+        up_commands = self._commands(lines, " up -d --remove-orphans ")
+        self.assertEqual(len(up_commands), 1)
+        self.assertTrue(
+            up_commands[0].endswith(
+                "up -d --remove-orphans postgres api frontend proxy"
+            )
+        )
+        self.assertNotIn("--profile watcher", up_commands[0])
+
+        verified = {
+            line.rsplit(" ", 1)[-1]
+            for line in self._commands(lines, " ps -q ")
+        }
+        self.assertEqual(verified, {"postgres", "api", "frontend", "proxy"})
+
+    def test_enabled_mode_activates_profile_deploys_and_verifies_watcher(self) -> None:
+        result, lines = self._run_deploy("1")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self._commands(lines, " stop watcher "), [])
+
+        up_commands = self._commands(lines, " up -d --remove-orphans ")
+        self.assertEqual(len(up_commands), 1)
+        self.assertIn("--profile watcher", up_commands[0])
+        self.assertTrue(
+            up_commands[0].endswith(
+                "up -d --remove-orphans postgres api watcher frontend proxy"
+            )
+        )
+
+        verified = {
+            line.rsplit(" ", 1)[-1]
+            for line in self._commands(lines, " ps -q ")
+        }
+        self.assertEqual(
+            verified,
+            {"postgres", "api", "watcher", "frontend", "proxy"},
+        )
+
+    def test_automatic_rollback_reuses_same_service_and_profile_mode(self) -> None:
+        for watcher_mode in ("0", "1"):
+            with self.subTest(watcher_mode=watcher_mode):
+                result, lines = self._run_deploy(
+                    watcher_mode,
+                    health_ok=False,
+                    current_version="previous-version",
+                )
+
+                self.assertEqual(result.returncode, 1)
+                up_commands = self._commands(
+                    lines,
+                    " up -d --remove-orphans ",
+                )
+                self.assertEqual(len(up_commands), 2)
+                self.assertEqual(
+                    [
+                        command.split(" up -d --remove-orphans ", 1)[1]
+                        for command in up_commands
+                    ],
+                    [
+                        "postgres api watcher frontend proxy"
+                        if watcher_mode == "1"
+                        else "postgres api frontend proxy"
+                    ]
+                    * 2,
+                )
+                self.assertEqual(
+                    ["--profile watcher" in command for command in up_commands],
+                    [watcher_mode == "1", watcher_mode == "1"],
+                )
 
 
 class InnerProxyTimeoutTests(unittest.TestCase):
