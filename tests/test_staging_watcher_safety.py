@@ -341,5 +341,46 @@ class LegacyDocQuarantineTests(unittest.TestCase):
             store_original.assert_not_called()
 
 
+
+class ExplicitFolderRoutingTests(unittest.TestCase):
+    def test_manual_seniority_overrides_internship_and_years_inference(self) -> None:
+        extracted = {
+            "informations_personnelles": {"titre": "Junior DevOps"},
+            "profil_resume": {"annees_experience": "4 ans"},
+            "experiences_professionnelles": [
+                {"type_contrat": "stage"},
+            ],
+        }
+        self.assertEqual(watcher._resolve_seniority(extracted, "Senior"), "Senior")
+        self.assertEqual(watcher._resolve_seniority(extracted, "expert"), "Expert")
+
+    def test_flat_staging_keeps_existing_automatic_seniority(self) -> None:
+        extracted = {
+            "informations_personnelles": {"titre": "DevOps"},
+            "profil_resume": {"annees_experience": "4 ans"},
+            "experiences_professionnelles": [{"type_contrat": "stage"}],
+        }
+        self.assertEqual(watcher._resolve_seniority(extracted, None), "Junior")
+
+    def test_profile_and_seniority_are_taken_from_existing_route(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            staging = root / "staging"
+            cv = staging / "DevOps" / "Senior" / "candidate.pdf"
+            cv.parent.mkdir(parents=True)
+            cv.write_bytes(b"synthetic-pdf")
+            storage = LocalCVStorage(
+                storage_root=root,
+                library_root=root / "CV_Theque",
+                staging_path=staging,
+            )
+            found = watcher.StagingScanner(storage, str(staging)).scan()
+            self.assertEqual(len(found), 1)
+            self.assertEqual(found[0].profile_hint, "DevOps")
+            self.assertEqual(found[0].seniority_hint, "Senior")
+
+
+
+
 if __name__ == "__main__":
     unittest.main()
