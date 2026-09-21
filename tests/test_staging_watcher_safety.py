@@ -362,6 +362,42 @@ class ExplicitFolderRoutingTests(unittest.TestCase):
         }
         self.assertEqual(watcher._resolve_seniority(extracted, None), "Junior")
 
+    def test_processor_persists_explicit_route_to_library_and_database(self) -> None:
+        extracted = {
+            "informations_personnelles": {"titre": "Junior DevOps"},
+            "profil_resume": {"annees_experience": "4 ans"},
+            "experiences_professionnelles": [{"type_contrat": "stage"}],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            staging = root / "staging"
+            source = staging / "DevOps" / "Senior" / "candidate.docx"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"synthetic")
+            storage = LocalCVStorage(
+                storage_root=root,
+                library_root=root / "CV_Theque",
+                staging_path=staging,
+            )
+            staged = watcher.StagingScanner(storage, str(staging)).scan()[0]
+            with patch.object(watcher, "WATCHER_STAGING_PATH", str(staging)), \
+                 patch.object(watcher, "_extract_text_docx", return_value="CV details " * 20), \
+                 patch.object(watcher, "_extract_cv_json", return_value=extracted), \
+                 patch.object(watcher, "_validate_json", side_effect=lambda data: data), \
+                 patch.object(watcher, "validate_extraction_quality"), \
+                 patch("service.candidate_store.upsert_candidate", return_value="synthetic-id") as upsert:
+                watcher.CVProcessor(storage).process(
+                    staged, known_profiles=frozenset({"DevOps"}),
+                    pending_profiles={}, pending_lock=threading.Lock(),
+                )
+            library = root / "CV_Theque" / "DevOps" / "Senior"
+            self.assertTrue((library / "originals" / "candidate.docx").exists())
+            self.assertTrue((library / "extracted" / "candidate.json").exists())
+            self.assertTrue((staging / "processed" / "DevOps" / "Senior" / "candidate.docx").exists())
+            self.assertEqual(upsert.call_args.kwargs["profile"], "DevOps")
+            self.assertEqual(upsert.call_args.kwargs["seniority"], "Senior")
+            self.assertEqual(upsert.call_args.kwargs["extracted_json"]["profil_resume"]["annees_experience"], "4 ans")
+
     def test_profile_and_seniority_are_taken_from_existing_route(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
