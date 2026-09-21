@@ -6,6 +6,7 @@ import { friendlyHttpError } from '@/lib/uploadLabels';
 // Match usePipeline.ts pattern exactly: base already includes /api/v1
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
 const NETWORK_ERROR_MESSAGE = 'Connexion au serveur impossible. Vérifiez votre réseau et réessayez.';
+const SENIORITIES = new Set(['junior', 'confirme', 'senior', 'expert']);
 
 export type FileStatus = 'pending' | 'uploading' | 'uploaded' | 'error';
 
@@ -36,6 +37,7 @@ interface StagingUploadState {
   errorCount: number;
   done: boolean;
   addFiles: (incoming: StagingFileInput[]) => void;
+  updateFileRouting: (id: string, field: 'profile' | 'seniority', value: string) => void;
   removeFile: (id: string) => void;
   clearFiles: () => void;
   uploadAll: () => Promise<void>;
@@ -91,6 +93,24 @@ export function useStagingUpload(): StagingUploadState {
     setDone(false);
   }, []);
 
+  // Each CV owns its route after entering the queue. Batch defaults only apply
+  // to newly added files; an operator may override folder-derived hints here.
+  const updateFileRouting = useCallback((id: string, field: 'profile' | 'seniority', value: string) => {
+    setFiles((prev) => prev.map((f) => {
+      if (f.id !== id || !['pending', 'error'].includes(f.status)) return f;
+      if (field === 'profile') {
+        return { ...f, profile: value || undefined, seniority: value ? f.seniority : undefined,
+          status: 'pending', error: undefined, pathWarning: undefined };
+      }
+      return { ...f, seniority: value || undefined, status: 'pending', error: undefined };
+    }));
+    setDone(false);
+  }, []);
+
+  const isValidRoute = useCallback((f: StagingFile) =>
+    !!f.profile && profiles.includes(f.profile) && !!f.seniority && SENIORITIES.has(f.seniority.toLowerCase()),
+  [profiles]);
+
   const removeFile = useCallback((id: string) => {
     setFiles((prev) => prev.filter((f) => f.id !== id));
   }, []);
@@ -101,6 +121,11 @@ export function useStagingUpload(): StagingUploadState {
   }, []);
 
   const uploadOne = useCallback(async (entry: StagingFile): Promise<void> => {
+    if (!isValidRoute(entry)) {
+      setFiles((prev) => prev.map((f) => f.id === entry.id
+        ? { ...f, status: 'error', error: 'Sélectionnez un profil et une séniorité valides.' } : f));
+      return;
+    }
     setFiles((prev) =>
       prev.map((f) => (f.id === entry.id ? { ...f, status: 'uploading' } : f))
     );
@@ -146,12 +171,12 @@ export function useStagingUpload(): StagingUploadState {
         )
       );
     }
-  }, []);
+  }, [isValidRoute]);
 
   // Concurrency-limited upload: max 3 simultaneous workers sharing a queue
   const uploadAll = useCallback(async () => {
     const pending = files.filter((f) => f.status === 'pending');
-    if (pending.length === 0) return;
+    if (pending.length === 0 || pending.some((f) => !isValidRoute(f))) return;
 
     setUploading(true);
     setDone(false);
@@ -172,7 +197,7 @@ export function useStagingUpload(): StagingUploadState {
 
     setUploading(false);
     setDone(true);
-  }, [files, uploadOne]);
+  }, [files, uploadOne, isValidRoute]);
 
   // Core retry step, no `uploading` bookkeeping of its own — both single-file
   // and bulk retry wrap this with their own start/stop so a bulk retry doesn't
@@ -215,7 +240,8 @@ export function useStagingUpload(): StagingUploadState {
     }
   }, [files, retryOne]);
 
-  const canUpload = files.some((f) => f.status === 'pending') && !uploading;
+  const pending = files.filter((f) => f.status === 'pending');
+  const canUpload = pending.length > 0 && pending.every(isValidRoute) && !uploading;
 
   return {
     profiles,
@@ -225,6 +251,7 @@ export function useStagingUpload(): StagingUploadState {
     errorCount,
     done,
     addFiles,
+    updateFileRouting,
     removeFile,
     clearFiles,
     uploadAll,

@@ -3060,7 +3060,7 @@ def _run_cv_alignment_worker(
                 "alignment_id": alignment_id,
                 "status": "running",
                 "progress": 10,
-                "stage_label": "DÃ©marrage",
+                "stage_label": "Démarrage",
                 "user_id": user_id,
                 "offer_filename": offer_name,
                 "cv_filename": cv_name,
@@ -3096,7 +3096,7 @@ def _run_cv_alignment_worker(
                 "alignment_id": alignment_id,
                 "status": "succeeded",
                 "progress": 100,
-                "stage_label": "PrÃªt Ã  tÃ©lÃ©charger",
+                "stage_label": "Prêt à télécharger",
                 "user_id": user_id,
                 "filename": result.filename,
                 "download_url": f"/api/v1/cv-alignments/{alignment_id}/download",
@@ -3122,7 +3122,7 @@ def _run_cv_alignment_worker(
                     "alignment_id": alignment_id,
                     "status": "failed",
                     "progress": 100,
-                    "stage_label": "Ã‰chec",
+                    "stage_label": "Échec",
                     "user_id": user_id,
                     "error": _friendly_cv_alignment_error(exc),
                     "offer_filename": offer_name,
@@ -3220,15 +3220,27 @@ async def staging_upload(
             detail=f"Format non supportÃ© : {ext or '(aucun)'}. Formats acceptÃ©s : .pdf, .docx, .doc",
         )
 
-    if seniority and not profile:
-        raise HTTPException(
-            status_code=400,
-            detail="La sÃ©nioritÃ© ne peut pas Ãªtre dÃ©finie sans un profil.",
-        )
+    # This endpoint is the intentional manual-upload path. Drive imports keep
+    # their separate optional/automatic routing contract.
+    if not profile or not seniority:
+        raise HTTPException(status_code=400, detail="Profil et séniorité requis pour un dépôt manuel.")
+    if seniority.strip().lower() not in _VALID_SENIORITIES:
+        raise HTTPException(status_code=400, detail="Séniorité inconnue.")
 
-
-    if seniority and seniority.lower() not in _VALID_SENIORITIES:
-        raise HTTPException(status_code=400, detail=f"SÃ©nioritÃ© inconnue : {seniority}")
+    # Never turn arbitrary client strings into new CV_Theque/staging categories.
+    # The live directory catalog is the source of selectable routing options.
+    try:
+        known_profiles = {
+            item.name.casefold(): item.name
+            for item in CV_THEQUE_DIR.iterdir()
+            if item.is_dir() and not item.is_symlink() and not item.name.startswith('.')
+        }
+    except OSError as exc:
+        app_logger.warning("Manual upload profile catalog unavailable: %s", exc)
+        raise HTTPException(status_code=503, detail="Catalogue des profils indisponible.") from exc
+    canonical_profile = known_profiles.get(profile.strip().casefold())
+    if canonical_profile is None:
+        raise HTTPException(status_code=400, detail="Profil inconnu. Choisissez un profil existant.")
 
     try:
         mount_path, _ = atomic_write_staging_upload(
@@ -3236,8 +3248,8 @@ async def staging_upload(
             filename=filename,
             source=file.file,
             max_bytes=_MAX_UPLOAD_BYTES,
-            profile=profile,
-            seniority=seniority,
+            profile=canonical_profile,
+            seniority=seniority.strip().lower(),
             unique=True,
         )
     except StoragePathError as exc:

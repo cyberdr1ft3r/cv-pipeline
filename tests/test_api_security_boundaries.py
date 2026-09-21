@@ -86,6 +86,7 @@ class ApiSecurityBoundaryTests(unittest.TestCase):
             "API_JOBS_DIR": api.API_JOBS_DIR,
             "CURRENT_DIR": api.CURRENT_DIR,
             "_WATCHER_STAGING_PATH": api._WATCHER_STAGING_PATH,
+            "CV_THEQUE_DIR": api.CV_THEQUE_DIR,
             "get_job": api.get_job,
             "get_job_by_session_id": api.get_job_by_session_id,
             "get_offer_by_id": api.get_offer_by_id,
@@ -96,6 +97,9 @@ class ApiSecurityBoundaryTests(unittest.TestCase):
         api.API_JOBS_DIR = self.root / "api_jobs"
         api.CURRENT_DIR = self.root / "current"
         api._WATCHER_STAGING_PATH = str(self.root / "staging")
+        api.CV_THEQUE_DIR = self.root / "CV_Theque"
+        for profile in ("DevOps", "FullStack"):
+            (api.CV_THEQUE_DIR / profile).mkdir(parents=True)
         api.app.dependency_overrides.clear()
 
     def tearDown(self) -> None:
@@ -207,12 +211,64 @@ class ApiSecurityBoundaryTests(unittest.TestCase):
 
         response = self.client.post(
             "/api/v1/staging/upload",
-            data={"profile": "../../escape"},
+            data={"profile": "../../escape", "seniority": "senior"},
             files={"file": ("cv.pdf", b"pdf", "application/pdf")},
         )
 
         self.assertEqual(response.status_code, 400)
         self.assertFalse((self.root / "escape").exists())
+
+    def test_manual_upload_requires_both_canonical_categories(self) -> None:
+        self._authenticate(OWNER_ID, "sourcer")
+        cases = [
+            {},
+            {"profile": "DevOps"},
+            {"seniority": "senior"},
+            {"profile": "Unknown", "seniority": "senior"},
+            {"profile": "DevOps", "seniority": "nonexistent"},
+            {"profile": "../DevOps", "seniority": "senior"},
+        ]
+        for data in cases:
+            with self.subTest(data=data):
+                response = self.client.post(
+                    "/api/v1/staging/upload",
+                    data=data,
+                    files={"file": ("cv.pdf", b"pdf", "application/pdf")},
+                )
+                self.assertEqual(response.status_code, 400)
+        self.assertFalse((self.root / "staging").exists())
+
+    def test_manual_upload_routes_mixed_batch_without_overwriting(self) -> None:
+        self._authenticate(OWNER_ID, "sourcer")
+        cases = [
+            ("d1.pdf", "DevOps", "junior"),
+            ("f1.pdf", "FullStack", "senior"),
+            ("d1.pdf", "DevOps", "junior"),
+        ]
+        responses = [
+            self.client.post(
+                "/api/v1/staging/upload",
+                data={"profile": profile, "seniority": seniority},
+                files={"file": (name, b"pdf", "application/pdf")},
+            )
+            for name, profile, seniority in cases
+        ]
+        self.assertEqual([r.status_code for r in responses], [200, 200, 200])
+        staging = self.root / "staging"
+        self.assertTrue((staging / "DevOps" / "Junior" / "d1.pdf").exists())
+        self.assertTrue((staging / "DevOps" / "Junior" / "d1 (1).pdf").exists())
+        self.assertTrue((staging / "FullStack" / "Senior" / "f1.pdf").exists())
+
+    def test_manual_upload_catalog_unavailable_is_503(self) -> None:
+        self._authenticate(OWNER_ID, "sourcer")
+        api.CV_THEQUE_DIR = self.root / "missing"
+        response = self.client.post(
+            "/api/v1/staging/upload",
+            data={"profile": "DevOps", "seniority": "senior"},
+            files={"file": ("cv.pdf", b"pdf", "application/pdf")},
+        )
+        self.assertEqual(response.status_code, 503)
+        self.assertFalse((self.root / "staging").exists())
 
     def test_drive_import_cannot_escape_staging(self) -> None:
         self._authenticate(OWNER_ID, "sourcer")

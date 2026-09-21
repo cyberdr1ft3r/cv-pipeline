@@ -53,6 +53,7 @@ export function CvUploadClient() {
     errorCount,
     done,
     addFiles,
+    updateFileRouting,
     removeFile,
     clearFiles,
     uploadAll,
@@ -65,6 +66,8 @@ export function CvUploadClient() {
   const pendingCount = files.filter((f) => f.status === 'pending').length;
   const totalCount = files.length;
   const availableProfiles = profiles.length > 0 ? profiles : FALLBACK_PROFILES;
+  const unclassifiedCount = files.filter((f) => f.status === 'pending' &&
+    (!f.profile || !profiles.includes(f.profile) || !f.seniority)).length;
 
   async function importFromDrive() {
     const url = driveUrl.trim();
@@ -117,6 +120,11 @@ export function CvUploadClient() {
     { value: AUTO, label: 'Profil auto' },
     ...availableProfiles.map((profile) => ({ value: profile, label: profileLabelFr(profile) })),
   ];
+  // Manual choices must come from the live catalog, not the legacy fallback list.
+  const manualProfileOptions = [
+    { value: AUTO, label: 'Aucun profil par défaut' },
+    ...profiles.map((profile) => ({ value: profile, label: profileLabelFr(profile) })),
+  ];
 
   return (
     <div className="w-full max-w-7xl space-y-6">
@@ -125,7 +133,7 @@ export function CvUploadClient() {
         <h1 className="text-3xl font-bold text-slate-950">Alimentation du vivier CV</h1>
         <p className="mt-1 max-w-2xl text-slate-600">
           Importez depuis Google Drive ou ajoutez des CVs manuellement. Le profil et le niveau
-          peuvent être fournis ici ou détectés automatiquement au traitement.
+          sont à renseigner pour chaque dépôt manuel. L'import Drive conserve ses options automatiques.
         </p>
       </div>
 
@@ -213,7 +221,7 @@ export function CvUploadClient() {
             </span>
             <div>
               <h2 className="text-sm font-semibold text-slate-900">Dépôt manuel</h2>
-              <p className="text-xs text-slate-500">Ces valeurs s'appliquent aux fichiers sélectionnés sans dossier profil/niveau.</p>
+              <p className="text-xs text-slate-500">Valeurs par défaut pour les nouveaux CVs ; vous pouvez modifier chaque CV dans la file d'envoi.</p>
             </div>
           </div>
 
@@ -225,8 +233,8 @@ export function CvUploadClient() {
                 setManualProfile(next);
                 if (!next) setManualSeniority('');
               }}
-              options={profileOptions}
-              disabled={uploading}
+              options={manualProfileOptions}
+              disabled={uploading || profiles.length === 0}
               ariaLabel="Profil par défaut du dépôt manuel"
             />
 
@@ -245,11 +253,14 @@ export function CvUploadClient() {
 
         <StagingDropZone
           onFilesAdded={addFiles}
-          profiles={availableProfiles}
+          profiles={profiles}
           defaultProfile={manualProfile || undefined}
           defaultSeniority={manualSeniority || undefined}
           disabled={uploading}
         />
+        {profiles.length === 0 && (
+          <p role="status" className="text-xs text-amber-700">Catalogue des profils indisponible : envoi manuel bloqué jusqu'à son chargement.</p>
+        )}
       </div>
 
       {/* ── Queue + send — one card, so the list and the action that sends it are
@@ -274,8 +285,14 @@ export function CvUploadClient() {
             files={files}
             onRemove={removeFile}
             onRetry={retryFile}
+            onUpdateRouting={updateFileRouting}
+            profiles={profiles}
             disabled={uploading}
           />
+
+          {unclassifiedCount > 0 && (
+            <p role="status" className="text-xs text-amber-700">Complétez le profil et la séniorité de {unclassifiedCount} CV avant l'envoi.</p>
+          )}
 
           {/* Progress bar — blue segment is actual successes, red is actual
               failures, so a fully-failed batch cannot render as a full "done" bar. */}
@@ -339,7 +356,7 @@ export function CvUploadClient() {
                 {uploadedCount === 0
                   ? `Aucun CV n'a été envoyé (${errorCount} erreur${errorCount > 1 ? 's' : ''}). Vérifiez les fichiers en erreur ci-dessus et réessayez.`
                   : errorCount === 0
-                  ? `${uploadedCount} CV${uploadedCount > 1 ? 's' : ''} envoyé${uploadedCount > 1 ? 's' : ''} avec succès. L'analyse automatique va les classer sous peu.`
+                  ? `${uploadedCount} CV${uploadedCount > 1 ? 's' : ''} envoyé${uploadedCount > 1 ? 's' : ''} avec succès. Ils seront extraits en conservant les profils et séniorités sélectionnés lorsque le traitement est actif.`
                   : `${uploadedCount} CV${uploadedCount > 1 ? 's' : ''} envoyé${uploadedCount > 1 ? 's' : ''}, ${errorCount} erreur${errorCount > 1 ? 's' : ''} à corriger ci-dessus.`}
               </p>
             </motion.div>
