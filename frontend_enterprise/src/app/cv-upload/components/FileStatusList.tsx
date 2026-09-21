@@ -6,6 +6,7 @@ import { CheckCircle2, FileText, Loader2, RefreshCw, X, XCircle } from 'lucide-r
 import type { StagingFile } from '@/hooks/useStagingUpload';
 import { profileLabelFr, seniorityLabelFr } from '@/lib/uploadLabels';
 import { usePrefersReducedMotion } from '@/hooks/usePrefersReducedMotion';
+import { DarkSelect } from '@/components/DarkSelect';
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} o`;
@@ -13,19 +14,19 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} Mo`;
 }
 
-/** Speaks the routing outcome in plain French, not a raw filesystem path — the
- * profile/seniority hint is stable for the file's whole lifecycle (set once in
- * addFiles), so there's no need to parse the server's absolute staging path. */
+/** Describe the per-file routing choice without exposing internal storage paths. */
 function routingLabel(f: StagingFile): string {
   if (f.profile && f.seniority) return `Classé dans : ${profileLabelFr(f.profile)} · ${seniorityLabelFr(f.seniority)}`;
   if (f.profile) return `Classé dans : ${profileLabelFr(f.profile)}`;
-  return 'Profil détecté automatiquement au traitement';
+  return 'Choisissez un profil et une séniorité avant l’envoi';
 }
 
 interface FileStatusListProps {
   files: StagingFile[];
   onRemove: (id: string) => void;
   onRetry: (id: string) => void;
+  onUpdateRouting: (id: string, field: 'profile' | 'seniority', value: string) => void;
+  profiles: string[];
   disabled?: boolean;
 }
 
@@ -55,7 +56,7 @@ const STATUS_BADGE: Record<
   },
 };
 
-export function FileStatusList({ files, onRemove, onRetry, disabled = false }: FileStatusListProps) {
+export function FileStatusList({ files, onRemove, onRetry, onUpdateRouting, profiles, disabled = false }: FileStatusListProps) {
   const reducedMotion = usePrefersReducedMotion();
   if (files.length === 0) return null;
 
@@ -71,6 +72,8 @@ export function FileStatusList({ files, onRemove, onRetry, disabled = false }: F
           const badge = STATUS_BADGE[entry.status];
           const label = routingLabel(entry);
           const hasProfile = !!(entry.profile);
+          const canEditRoute = !disabled && (entry.status === 'pending' || entry.status === 'error');
+          const missingRoute = !entry.profile || !profiles.includes(entry.profile) || !entry.seniority;
 
           return (
             <motion.div
@@ -130,6 +133,45 @@ export function FileStatusList({ files, onRemove, onRetry, disabled = false }: F
                   </button>
                 )}
               </div>
+
+              {(entry.status === 'pending' || entry.status === 'error') && (
+                <div className="mt-3 grid gap-2 pl-12 sm:grid-cols-2">
+                  <label className="space-y-1 text-xs font-medium text-slate-600">
+                    <span>Profil *</span>
+                    <DarkSelect
+                      value={entry.profile || '__select_profile__'}
+                      onChange={(v) => onUpdateRouting(entry.id, 'profile', v === '__select_profile__' ? '' : v)}
+                      options={[
+                        { value: '__select_profile__', label: 'Choisir un profil' },
+                        ...profiles.map((p) => ({ value: p, label: profileLabelFr(p) })),
+                      ]}
+                      disabled={!canEditRoute || profiles.length === 0}
+                      ariaLabel={`Profil de ${entry.file.name}`}
+                    />
+                  </label>
+                  <label className="space-y-1 text-xs font-medium text-slate-600">
+                    <span>Séniorité *</span>
+                    <DarkSelect
+                      value={entry.seniority || '__select_seniority__'}
+                      onChange={(v) => onUpdateRouting(entry.id, 'seniority', v === '__select_seniority__' ? '' : v)}
+                      options={[
+                        { value: '__select_seniority__', label: 'Choisir une séniorité' },
+                        { value: 'junior', label: 'Junior' },
+                        { value: 'confirme', label: 'Confirmé' },
+                        { value: 'senior', label: 'Senior' },
+                        { value: 'expert', label: 'Expert' },
+                      ]}
+                      disabled={!canEditRoute || !entry.profile || !profiles.includes(entry.profile)}
+                      ariaLabel={`Séniorité de ${entry.file.name}`}
+                    />
+                  </label>
+                  {missingRoute && (
+                    <p className="sm:col-span-2 text-xs text-amber-700" role="status">
+                      Profil et séniorité requis pour ce CV.
+                    </p>
+                  )}
+                </div>
+              )}
 
               {/* Path warning (amber) — folder dropped but profile not parseable */}
               {entry.pathWarning && (
