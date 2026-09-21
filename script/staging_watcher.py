@@ -915,6 +915,14 @@ def _all_internships(extracted: Dict) -> bool:
 
 
 def _resolve_seniority(extracted: Dict, hint: Optional[str]) -> str:
+    # A recognized staging/{profile}/{seniority}/ route is an explicit choice.
+    # Retain legacy inference for flat staging and profile-only directories.
+    # This also applies to Google Drive imports with an explicit two-level route.
+    if hint:
+        canonical_hint = normalize_seniority(hint)
+        if canonical_hint in _KNOWN_SENIORITIES:
+            return canonical_hint
+
     title = _get_cv_title(extracted)
     profil = extracted.get("profil_resume", {})
     annees = profil.get("annees_experience", "")
