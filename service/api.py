@@ -1270,6 +1270,48 @@ def _file_response_local(local_path: Path, filename: str | None = None) -> FileR
         raise HTTPException(status_code=503, detail="Stockage local indisponible") from exc
 
 
+def _read_extracted_cv_skills(job: "PipelineJob", cv_filename: str) -> list[str]:
+    """Best-effort re-read of the original extracted CV JSON (by the exact
+    filename script/matcher.py scored, job.artifacts.input_cv_dir points at
+    the directory it was scored from) to recover a real skills list.
+
+    Task 6.5.6A: MatchScore (script/matcher.py) never carried a `skills`
+    field at all -- only `skills_match`, a percentage -- so
+    `item.get("skills")` below always evaluated to None/`[]`, silently
+    returning an empty skills array for EVERY candidate regardless of what
+    was actually extracted. The real technologies/methodologies list is
+    still sitting in the source CV JSON this scoring run read from; this
+    reopens that one file (not the whole matcher pipeline) to recover it.
+    Never raises -- a missing/moved/malformed file degrades to an empty
+    list exactly like today's behavior, it does not fail the whole
+    response over one candidate's file.
+    """
+    cv_dir = (job.artifacts.input_cv_dir or "").strip()
+    if not cv_dir or not cv_filename:
+        return []
+    try:
+        cv_path = Path(cv_dir) / cv_filename
+        if not cv_path.is_file():
+            return []
+        cv_data = json.loads(cv_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+    def _to_string_list(items) -> list[str]:
+        out: list[str] = []
+        for entry in items or []:
+            if isinstance(entry, str):
+                out.append(entry)
+            elif isinstance(entry, dict):
+                out.append(str(entry.get("nom", entry.get("name", entry))))
+        return out
+
+    competences = cv_data.get("competences", {}) if isinstance(cv_data, dict) else {}
+    technologies = _to_string_list(competences.get("technologies"))
+    methodologies = _to_string_list(competences.get("methodologies_et_outils"))
+    return technologies + methodologies
+
+
 @app.get("/api/v1/jobs/{job_id}/matching")
 async def get_matching_results(
     request: Request,
@@ -1295,18 +1337,32 @@ async def get_matching_results(
     for idx, item in enumerate(raw_candidates, 1):
         cid = str(item.get("candidate_id") or "")
         db_years = annees_by_id.get(cid) if cid else None
+        cv_filename = item.get("cv_filename")
+        email = item.get("email")
         results.append(
             {
                 "rank": idx,
                 "candidateName": item.get("candidate_name"),
                 "candidateId": item.get("candidate_id"),
+                # Task 6.5.6A: a stable per-candidate key independent of
+                # name/email, always set by script/matcher.py's MatchScore
+                # -- previously computed but never serialized here. Lets
+                # RoadSource dedupe real candidate records instead of
+                # matching on full_name alone (see the companion
+                # roadsource fix persisting this as talent_hub_cvs.
+                # cvpipeline_external_key).
+                "cvFilename": cv_filename,
                 "matchScore": item.get("overall_score"),
                 "experience": db_years or item.get("annees_experience") or "N/A",
-                "skills": item.get("skills") or [],
+                "skills": _read_extracted_cv_skills(job, cv_filename) if cv_filename else [],
                 "summary": item.get("recommendation"),
                 "skillsMatch": item.get("skills_match"),
                 "experienceMatch": item.get("experience_match"),
                 "educationMatch": item.get("education_match"),
+                # Task 6.5.6A: already extracted per-candidate (MatchScore.email)
+                # but previously discarded by this endpoint -- real contact
+                # info, not a fabricated value.
+                "email": email if email and email != "N/A" else None,
             }
         )
     return {
