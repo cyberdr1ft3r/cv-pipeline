@@ -452,6 +452,24 @@ def _external_cv_dir(job: PipelineJob) -> str | None:
     intermediary_root = str(CURRENT_DIR / "intermediary_structured").replace("\\", "/")
     if cv_dir.replace("\\", "/").startswith(intermediary_root):
         return None
+    # Task 6.5.5 fix: in the standard upload-and-extract flow,
+    # `job.artifacts.input_cv_dir` is the RAW upload directory
+    # (api_jobs/{job_id}/inputs/cvs -- the original .docx/.pdf files), not
+    # a pre-extracted CV directory -- it never "points outside
+    # intermediary_structured" in the sense this function's own docstring
+    # describes (a genuinely external, already-extracted CV source for
+    # reuse). Passing it to the matcher as --cv-dir made it glob for *.json
+    # there and find none (the real extracted JSON lives under
+    # intermediary_structured/{session_id}, written by
+    # 01_extraction_and_validation.py, confirmed by locating it directly
+    # on disk), silently scoring zero candidates despite extraction having
+    # genuinely succeeded. Only treat it as a real external CV source if
+    # it actually contains extracted JSON files.
+    try:
+        if not any(Path(cv_dir).glob("*.json")):
+            return None
+    except OSError:
+        return None
     return cv_dir
 
 

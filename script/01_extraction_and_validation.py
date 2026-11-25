@@ -1129,7 +1129,16 @@ def process_all_pdfs(input_dir: Path, job_offer_path: Path, max_cv_retries: int 
             session_offer_dir = OFFER_DIR_BASE / SESSION_ID
             os.makedirs(session_offer_dir, exist_ok=True)
             offer_dest = session_offer_dir / offer_filename
-            shutil.copy2(JOB_OFFER_PATH, offer_dest)
+            # Task 6.5.5 fix: the API's own job setup can already place the
+            # uploaded .txt offer directly at this same destination path
+            # (confirmed by reproducing it) -- shutil.copy2 raises
+            # SameFileError when src and dst resolve to the identical file,
+            # which previously crashed the whole pipeline after CV
+            # extraction had already succeeded. Skipping the no-op copy is
+            # the narrow fix; the file is already exactly where it needs to
+            # be in that case.
+            if offer_dest.resolve() != JOB_OFFER_PATH.resolve():
+                shutil.copy2(JOB_OFFER_PATH, offer_dest)
             logger.info(f"   💾 Copied to: data/offer/{SESSION_ID}/{offer_filename}\n")
         else:
             logger.info(f"📊 Extracting from {offer_extension} format...")
