@@ -47,6 +47,7 @@ from service.cv_storage import (
     StoragePathError,
     atomic_write_staging_upload,
     normalize_profile,
+    normalize_seniority,
     resolve_staging_upload_path,
     sanitize_filename_component,
 )
@@ -3040,6 +3041,51 @@ def import_google_drive_cvs(
         "imported": imported,
         "failed": failed,
     }
+
+
+@app.get("/api/v1/cv-theque/{profile}/{seniority}/original/{stem}")
+async def get_cv_theque_original(
+    profile: str,
+    seniority: str,
+    stem: str,
+    current_user: TokenPayload = Depends(_require_role("sourcer", "recruiter", "admin")),
+):
+    """Task 6.5.6B -- serves the ORIGINAL CV document (not the extracted
+    JSON) for one CV_Theque bank entry, so a caller (RoadSource) can feed a
+    real source document into /api/v1/cv-alignments, which explicitly
+    operates on raw files, never on extracted JSON (align_cv_to_offer calls
+    extract_document_text itself). `profile`/`seniority` are normalized the
+    same way the watcher/matcher already normalize them (service/cv_storage.py),
+    so a caller can pass either the raw or the folder-cased form. `stem` is
+    validated with the same `sanitize_filename_component` every other
+    upload path in this file uses -- rejects traversal, absolute paths, and
+    empty/dotfile names before it ever touches the filesystem. Only the
+    `originals/` subfolder for that exact profile/seniority pair is
+    searched (service/cv_storage.py's `store_original` is the only writer
+    of that folder) -- this can never serve a file from anywhere else in
+    CV_Theque or beyond it.
+    """
+    try:
+        safe_stem = sanitize_filename_component(stem)
+    except StoragePathError:
+        raise HTTPException(status_code=400, detail="Identifiant de candidat invalide")
+
+    originals_dir = CV_THEQUE_DIR / normalize_profile(profile) / normalize_seniority(seniority) / "originals"
+    if not _path_exists_safe(originals_dir):
+        raise HTTPException(status_code=404, detail="Aucun document original pour ce profil/seniorite")
+
+    matches = sorted(p for p in originals_dir.glob(f"{safe_stem}.*") if p.is_file())
+    if not matches:
+        raise HTTPException(status_code=404, detail="Document original introuvable pour ce candidat")
+
+    path = matches[0]
+    media_type = {
+        ".pdf": "application/pdf",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".doc": "application/msword",
+        ".txt": "text/plain",
+    }.get(path.suffix.lower(), "application/octet-stream")
+    return FileResponse(path, filename=path.name, media_type=media_type)
 
 
 @app.post("/api/v1/cv-alignments")
